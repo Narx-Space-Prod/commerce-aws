@@ -1,0 +1,5 @@
+apiVersion: v2
+name: commerce-aws
+description: One AWS learning environment; immutable images and managed RDS/SQS
+type: application
+version: 0.1.0

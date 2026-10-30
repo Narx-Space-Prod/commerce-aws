@@ -1,0 +1,9 @@
+output "cluster_name" { value = aws_eks_cluster.this.name }
+output "region" { value = var.region }
+output "account_id" { value = var.account_id }
+output "vpc_id" { value = aws_vpc.this.id }
+output "runtime_secret_arn" { value = aws_secretsmanager_secret.runtime.arn }
+output "database_secret_arn" { value = aws_db_instance.this.master_user_secret[0].secret_arn }
+output "database_identifier" { value = aws_db_instance.this.identifier }
+output "queue_url" { value = aws_sqs_queue.paid.url }
+output "dlq_url" { value = aws_sqs_queue.dlq.url }

@@ -1,0 +1,53 @@
+{{- if .Values.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rds-ca
+  annotations: {argocd.argoproj.io/sync-wave: '-2'}
+data:
+  global-bundle.pem: |
+    {{- required "RDS trust bundle is missing" (.Files.Get "files/global-bundle.pem") | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: commerce-database-user
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/sync-wave: '-1'
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 600
+  template:
+    metadata: {labels: {app: commerce, component: database-bootstrap}}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: bootstrap
+          image: postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
+          command: [/bin/sh, -ec]
+          args:
+            - |
+              psql -X --set ON_ERROR_STOP=1 <<'SQL'
+              \getenv app_password APP_PASSWORD
+              SELECT 'CREATE ROLE commerce_app LOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'commerce_app') \gexec
+              ALTER ROLE commerce_app PASSWORD :'app_password';
+              GRANT CONNECT ON DATABASE commerce TO commerce_app;
+              GRANT USAGE, CREATE ON SCHEMA public TO commerce_app;
+              SQL
+          env:
+            - {name: PGHOST, valueFrom: {secretKeyRef: {name: commerce-runtime, key: DATABASE_HOST}}}
+            - {name: PGUSER, value: commerce}
+            - {name: PGDATABASE, value: commerce}
+            - {name: PGSSLMODE, value: verify-full}
+            - {name: PGSSLROOTCERT, value: /certs/global-bundle.pem}
+            - {name: PGPASSWORD, valueFrom: {secretKeyRef: {name: commerce-db-admin, key: password}}}
+            - {name: APP_PASSWORD, valueFrom: {secretKeyRef: {name: commerce-runtime, key: DATABASE_PASSWORD}}}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          resources: {requests: {cpu: 25m, memory: 32Mi}, limits: {cpu: 250m, memory: 96Mi}}
+          volumeMounts: [{name: ca, mountPath: /certs, readOnly: true}]
+      volumes: [{name: ca, configMap: {name: rds-ca}}]
+{{- end }}
