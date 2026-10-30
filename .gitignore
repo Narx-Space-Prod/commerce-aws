@@ -14,6 +14,7 @@ __pycache__/
 .pytest_cache/
 *.pem
 !application/orders/certs/global-bundle.pem
+!deploy/chart/files/global-bundle.pem
 *.key
 *.tar
 *.tgz

@@ -6,7 +6,7 @@ metadata:
   annotations: {argocd.argoproj.io/sync-wave: '-2'}
 data:
   global-bundle.pem: |
-    {{- .Files.Get "files/global-bundle.pem" | nindent 4 }}
+    {{- required "RDS trust bundle is missing" (.Files.Get "files/global-bundle.pem") | nindent 4 }}
 ---
 apiVersion: batch/v1
 kind: Job
