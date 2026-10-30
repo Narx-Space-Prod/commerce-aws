@@ -1,0 +1,35 @@
+name: Verify release app
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    name: Verify release app access
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: release-proposal
+    steps:
+      - name: Generate repository-scoped installation token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: Narx-Space-Prod
+          repositories: commerce-aws
+      - name: Verify repository and effective permissions
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          gh api repos/Narx-Space-Prod/commerce-aws --jq '{repository: .full_name, permissions: .permissions}' > "$RUNNER_TEMP/repository.json"
+          python3 - <<'PY'
+          import json, os
+          with open(os.environ['RUNNER_TEMP'] + '/repository.json') as f:
+              data = json.load(f)
+          assert data['repository'] == 'Narx-Space-Prod/commerce-aws'
+          assert data['permissions']['push'], 'App needs Contents write'
+          print('App can access commerce-aws with write access.')
+          PY
+          gh api installation/repositories --jq '[.repositories[].full_name] | if . == ["Narx-Space-Prod/commerce-aws"] then . else error("Unexpected token repository scope") end'
