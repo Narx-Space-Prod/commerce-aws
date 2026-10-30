@@ -4,17 +4,29 @@ This is one application in one AWS **learning** environment. It reuses the Comme
 app so that your work focuses on infrastructure and operations. It does not depend
 on your laptop Kubernetes cluster or the previous six-repository delivery system.
 
-The code is prepared here; **AWS resources have not been created**. GitHub variables
-`DELIVERY_ENABLED=false` and `INFRA_ENABLED=false` keep cloud jobs disabled.
+**Status snapshot, 30 October 2026:** The retained foundation exists: the private
+state bucket, four empty ECR repositories, budget, GitHub OIDC provider, publisher
+and planning identities, and the MFA bootstrap identity. Their configuration is
+tracked in Terraform. The release App's authentication test passed. A read-only
+session plan was generated; **the EKS session, database, application and monitoring
+have not been deployed**. The apply identity is not yet provisioned or verified.
+GitHub variables `DELIVERY_ENABLED=false` and `INFRA_ENABLED=false` keep cloud jobs disabled.
 `deploy/environment.yaml` also starts disabled. Do not claim the AWS end-to-end
 deployment has passed until you have performed the activation exercises below.
+
+Read this guide in order for the first build: architecture and costs; identity and
+bootstrap; GitHub setup; session creation; platform and release; operations and
+cleanup. The reference chapters after the runbook explain each code file and trace
+requests, credentials, deployment, recovery and troubleshooting. Examples use
+placeholders; replace them locally and never paste secrets or MFA codes into chat.
+This status is a snapshot, not proof of the current AWS bill or resource inventory.
 
 ## What you will learn
 
 | Service/tool | Its actual responsibility here |
 |---|---|
 | VPC, subnets, routing, security groups | Public worker/ALB subnets, isolated database subnets, PostgreSQL access from nodes only |
-| IAM, AWS SSO, GitHub OIDC | Human operator identity and short-lived workflow credentials |
+| IAM, STS, GitHub OIDC | Human operator identity and short-lived workflow credentials |
 | EKS, EC2 managed node group | Kubernetes control plane and one replaceable worker |
 | ECR | Private, immutable application images and signed release evidence |
 | EBS | Encrypted gp3 volumes for Redis and monitoring |
@@ -209,6 +221,8 @@ behaviour; offline renders are not proof that a cloud deployment works.
 
 ## 1. Validate without spending on AWS
 
+Use a fresh clone or separate worktree for the following backend-disabled checks;
+do not reinitialize an operational state-connected checkout with `-backend=false`.
 Tools: Git, GitHub CLI, Docker/BuildKit, Python 3, Terraform 1.16.0, Helm 3.22.0,
 kubectl compatible with Kubernetes 1.35, AWS CLI v2 and jq. On headless Linux use
 SSH port forwarding for private administrative UIs. Tool downloads used in CI are
@@ -262,9 +276,9 @@ non-root console-login path after the example; do not create an organization jus
 to follow an SSO example.
 
 ```bash
-aws configure sso --profile commerce-learning
-aws sso login --profile commerce-learning
-export AWS_PROFILE=commerce-learning
+aws configure sso --profile commerce-sso-example
+aws sso login --profile commerce-sso-example
+export AWS_PROFILE=commerce-sso-example
 aws sts get-caller-identity
 aws ec2 describe-availability-zones --region ap-south-1
 aws iam list-open-id-connect-providers
@@ -459,7 +473,9 @@ identity and all activation checks are complete.
 
 ## 4. Create the session infrastructure
 
-For the first session you can plan locally using your reviewed SSO operator role.
+For the first session you can plan locally using the authenticated read-only profile;
+the existing bootstrap role is not authorized to apply session infrastructure. An
+actual apply requires the separately reviewed deployment role and approval.
 Initialize the backend after replacing the example values below:
 
 ```bash
@@ -470,9 +486,11 @@ terraform -chdir=infrastructure/session init -reconfigure \
   -backend-config='region=ap-south-1' \
   -backend-config='encrypt=true' -backend-config='use_lockfile=true'
 terraform -chdir=infrastructure/session plan -out=session.tfplan
-terraform -chdir=infrastructure/session apply session.tfplan
-terraform -chdir=infrastructure/session output
 ```
+
+The saved plan is sensitive. Do not apply it with an unreviewed identity; use the
+protected pipeline after the apply role is ready. Remove local plan files securely
+when no longer needed.
 
 Check the current EKS support calendar and regional add-on compatibility before
 applying. Kubernetes starts at 1.35 with standard support only; add-on versions are
@@ -739,11 +757,351 @@ one giant script that tries to build, provision, deploy and recover everything.
 
 ## What remains before calling the environment operational
 
-Review/merge the foundation, choose AWS account/region/budget, configure least-scope
-infrastructure OIDC roles and the release App, migrate the bootstrap state, apply
-the session, install the platform, configure ACM/DNS/payment sandbox, verify signed
-releases, and perform real deployment/alert/restore/teardown exercises. Record actual
-results rather than describing prepared YAML as a completed production deployment.
+The foundation and planning role are created and tracked, and release App
+authentication has been verified. Still needed: design and provision a scoped apply
+role; validate both OIDC roles and the GitHub infrastructure workflow against AWS;
+review cost and the session plan; apply with approval; install the platform; configure
+ACM/DNS/payment sandbox; verify signed releases; and perform real deployment, alert,
+restore and teardown exercises. Record actual results rather than describing prepared
+YAML as a completed production deployment.
+
+## Reference: concepts before commands
+
+**A Git commit** is a snapshot identified by a hash. A branch is a movable name
+for a series of commits. A pull request (PR) asks a reviewer to merge a branch;
+checks provide evidence but do not replace human review. GitHub environments
+protect jobs and scope secrets. Their branch restrictions are part of the OIDC trust
+boundary, so changing them can change who can access AWS.
+
+**A container image** is a packaged filesystem and startup configuration. A tag
+is a name; a digest identifies exact content. ECR stores images; EKS runs them. A
+Dockerfile explains how to build an image; Kubernetes manifests explain how to run
+it. Helm renders templates and values into manifests. A Deployment maintains pods,
+a Service gives pods a stable internal address, and an Ingress describes external
+HTTP routing. A controller observes desired objects and creates or adjusts actual
+resources. Argo CD is a controller whose desired application state comes from Git.
+
+**Terraform** compares configuration with state and AWS, builds a dependency graph
+and presents a plan. State maps Terraform resource addresses to actual AWS IDs;
+it is not the infrastructure itself. `init` downloads providers and connects the
+backend; `validate` checks configuration; `plan` proposes changes; `apply` makes
+changes; `destroy` proposes deletion of managed resources. A provider is the
+plugin that talks to AWS; a module is a collection of configuration. These two
+roots have independent state, so destroy of `session` must not delete `bootstrap`.
+Terraform automatically orders references but cannot see every resource a
+Kubernetes controller creates. Keep state and saved plans private: both may contain
+secrets, even when CLI output hides them.
+
+**One identity, different jobs.** A human signs in with MFA; GitHub Actions requests
+a short-lived OIDC token; AWS validates its repository/environment claims and
+returns temporary role credentials. An IAM role has a trust policy describing who
+may assume it and permission policies describing what an assumed role may do. A
+permissions boundary limits the maximum permissions that role can receive; it does
+not grant permissions. Pod Identity maps a Kubernetes service account to an AWS
+role for specific pods. None of these is a reason to put long-lived keys in Git.
+
+## Reference: repository and Terraform code tour
+
+This table describes the current source, including optional or disabled paths. An
+entry describes intent; successful validation or a real deployment is separate.
+
+| Path | Responsibility and important details |
+|---|---|
+| `infrastructure/bootstrap/versions.tf`, `variables.tf` | Provider/Terraform versions, region and state-bucket inputs; inspect constraints before upgrading. |
+| `infrastructure/bootstrap/main.tf`, `backend.tf` | Retained S3 bucket, public-access block, encryption, ownership and versioning; S3 backend points at remote state after initial bootstrap. |
+| `infrastructure/bootstrap/budget.tf` | Account-wide monthly USD budget and email warnings, not an automatic spending limit. |
+| `infrastructure/bootstrap/registry.tf` | GitHub OIDC provider, four immutable ECR repos, bounded registry publisher and lifecycle expiration for private plan objects. |
+| `infrastructure/bootstrap/access.tf` | The separately bootstrapped, MFA-required human role and publisher permission boundary; the role deliberately cannot grant itself more access. |
+| `infrastructure/bootstrap/plan-identity.tf` | Plan role trust is restricted to the planning environment and main; it may read state/metadata and write locks/plans but not overwrite session state. |
+| `infrastructure/bootstrap/outputs.tf`, `bootstrap.example.tfvars`, `.terraform.lock.hcl` | Non-secret outputs, example inputs and locked provider selections/checksums; real values belong in ignored private files. |
+| `infrastructure/bootstrap/tests/` | Mocked AWS tests of trust, boundaries and retained resources. Mock tests do not prove live AWS access or eventual consistency. |
+| `infrastructure/session/versions.tf`, `variables.tf` | Session providers, account allowlist and defaults/validation, including two AZs and explicit operator IPv4 `/32` addresses. |
+| `infrastructure/session/network.tf` | `10.42.0.0/16` VPC, two public and two database subnets, internet gateway, public routes and database security group. No NAT or SSH is created. |
+| `infrastructure/session/cluster.tf` | EKS control plane, managed nodes/launch template, API access, logging, add-ons, node/CNI/storage identities and pod-identity integrations. |
+| `infrastructure/session/data.tf` | RDS, SQS + DLQ, generated passwords, runtime secret and separate publisher/worker/secrets identities. Session publisher name is distinct from retained ECR publisher. |
+| `infrastructure/session/ingress.tf` and `policies/load-balancer.json` | Load Balancer Controller identity and its pinned upstream IAM policy; the controller, not Terraform, creates the ALB after an enabled ingress. |
+| `infrastructure/session/https.tf` | Optional ACM certificate and DNS validation in an existing Route 53 zone; no domain is purchased. |
+| `infrastructure/session/notifications.tf` | SNS email subscription and KMS policy/key for queue notifications. Email subscription must be confirmed. |
+| `infrastructure/session/observability.tf` | Queue age and DLQ CloudWatch alarms. EKS log retention is configured in `cluster.tf`. |
+| `infrastructure/session/outputs.tf`, `session.example.tfvars`, `.terraform.lock.hcl`, `tests/` | Useful references, example inputs, locked provider versions and mocked boundary checks. |
+| `deploy/chart/templates/` | Workloads and services, Redis/storage, bootstrap job, External Secrets, network policies, monitoring resources and optional ingress. |
+| `deploy/chart/values.yaml`, `deploy/environment.yaml`, `deploy/release.json` | Base defaults, reviewed environment settings and immutable release digests. Argo combines environment and release files; actual current settings start disabled. |
+| `deploy/platform/` | Helm chart versions/values and storage class. Monitoring, secrets, Argo and controllers are installed by the platform helper, not by Terraform. |
+| `deploy/argocd.yaml` | One AppProject and one Application, tracking `main`; automated sync, pruning, self-heal and selected HPA replica-difference handling. |
+| `.github/CODEOWNERS`, `.github/PULL_REQUEST_TEMPLATE.md` | Review ownership and PR prompts. Effective branch protection/environment settings live in GitHub and must also be checked there. |
+| `.github/workflows/` | CI orchestration, reusable image workflow, manual infrastructure workflow and manually dispatched release-App verification. |
+| `.trivyignore.yaml` | Documented, expiring infrastructure scan exceptions. Review each exception and its expiry; it is not a blanket image-scan exception. |
+
+### Dockerfiles: from source to runtime
+
+Each component has its own build context and multi-stage Dockerfile. A stage is a
+named intermediate image; the final `runtime` stage is the one CI tests and, after
+merge, publishes. All base images are pinned by digest. `COPY` adds files, `RUN`
+executes build steps, `USER` chooses the runtime user, and `ENTRYPOINT` or `CMD`
+defines startup. `EXPOSE` documents a port; it does not publish it to the internet.
+
+| Dockerfile | Build/test path | Runtime result |
+|---|---|---|
+| `application/frontend/Dockerfile` | Node dependencies installed with `npm ci --ignore-scripts`; source and tests copied; `npm test` runs. | Node runtime copies tested source and public files, removes package-management tools and runs as UID 10001 on port 8080. |
+| `application/catalogue/Dockerfile` | Go format, vet and tests run before building a static binary. | Small Alpine runtime contains the binary and runs as UID 10001 on port 8081. |
+| `application/orders/Dockerfile` | Maven dependencies are cached in an earlier stage; `mvn verify` runs and builds the JAR. | Java runtime copies the tested JAR and database CA certificates, runs as UID 10001 on port 8083. Orders, publisher and worker use this same image. |
+| `application/orders/cart/Dockerfile` | Hash-pinned Python dependencies become wheels; pytest runs with development dependencies. | Runtime installs only production dependencies from wheels, copies tested app code and runs as UID 10001 on port 8082. |
+
+Pinning a base image gives repeatable selection, not permanent safety: dependencies
+and base images still require reviewed security updates. Cache speeds up builds;
+it does not make an old cached result trustworthy by itself. Kubernetes adds
+read-only root filesystems, capability restrictions, probes and resource settings
+in the chart. CI additionally inspects the runtime image user and scans it.
+
+## Reference: AWS service choices and prerequisites
+
+| Service | Job in this project | Before use / important limitation |
+|---|---|---|
+| IAM and STS | Human role, GitHub OIDC roles and workload permissions. | Enable root MFA; use a non-root operator and short-lived credentials. The apply role is pending. Never create or paste root access keys. |
+| VPC / EC2 networking | Network isolation, routes, security groups, and worker connectivity. | Confirm account, region, two available AZs, free address space and quotas. Public worker addresses save NAT cost but are not the usual hardened private-node production topology. |
+| EKS and EC2 | Managed Kubernetes API and a managed worker node group. | Check service eligibility, quotas, version/add-on compatibility and current price. One worker is a single point of failure; EKS control-plane availability does not make the workload highly available. |
+| ECR | Four immutable image repositories. | OIDC publisher, repository permissions, encryption and scan settings. The initial repositories exist; publishing is disabled. Image storage is retained and can cost money. |
+| S3 | Separate bootstrap and session state keys plus encrypted, versioned saved plans and lock files. | Restrict bucket access; state and plans can contain passwords. Bucket versioning and plan expiry do not replace access review or backups. |
+| RDS PostgreSQL | Private order/account database, encrypted storage and managed master secret. | Check engine availability and capacity; confirm backup/restore and compatible migrations. The disposable session deletes automated backups and skips a final snapshot. |
+| EBS | Worker root disk and encrypted dynamically provisioned Kubernetes volumes. | CSI add-on and storage class must work. A PVC can create a billable disk outside Terraform's direct state. |
+| SQS | Order-paid queue, retries and dead-letter queue. | Pod Identity permissions must be validated. Monitor oldest message age and DLQ depth; a redrive needs investigation and duplicate-safe consumers. |
+| Secrets Manager | Runtime connection data and RDS-managed master credentials. | External Secrets and Pod Identity must work. State is also sensitive. Secret rotation and payment sandbox setup need their own exercises. |
+| ACM / Route 53 / ALB | Optional validated HTTPS certificate, DNS and public ingress. | Existing domain and hosted zone or external DNS, issued regional ACM certificate, enabled ingress and controller. DNS/ALB can add costs and are not created by default. |
+| CloudWatch / SNS / KMS | EKS log group and queue alarms delivered through an encrypted topic. | Confirm SNS email subscription; verify KMS/topic policies and alarms in a live session. Logs and key usage may cost money. |
+| AWS Budgets / Billing | Account-wide email warnings and actual spend visibility. | Budget thresholds are delayed warnings, not a stop button. Check credits, currency, taxes, other regions and actual billing separately. |
+| CloudTrail | Event history for investigating AWS management actions. | The project does not configure a durable, centralized multi-account audit archive. Do not assume event history replaces a long-term trail. |
+
+### How the network fits together
+
+The internet-facing ALB listens on 80 and 443, redirects HTTP to HTTPS and forwards
+to frontend pod IPs when ingress is enabled. The frontend calls backend Services
+inside the cluster. PostgreSQL sits in database subnets with no public IP and accepts
+TCP 5432 from the referenced EKS cluster security group. The public subnets have
+routes to an internet gateway; the database subnets have no NAT route. Node public
+IPs support outbound access without a NAT gateway. Security groups are stateful;
+Kubernetes NetworkPolicy provides additional pod traffic restrictions when its CNI
+implementation is working. Neither layer replaces the other.
+
+EKS requires subnets in two AZs, but this configuration places its worker and RDS
+instance in the first AZ. An AZ label can map to different physical AZs in different
+AWS accounts. This is a deliberately low-cost learning tradeoff, not multi-AZ
+application resilience. The current operator IP is an explicit `/32`; laptop or
+network changes can change it. Refresh the protected variable and review an
+infrastructure plan before relying on API access. Do not open `0.0.0.0/0` to make a
+failing connection disappear.
+
+### Request and message journey
+
+1. A browser resolves the shop hostname, reaches ALB HTTPS and receives a valid ACM
+   certificate. The ingress controller routes the request to the frontend Service.
+2. Frontend requests reach the catalogue, cart and orders Services as appropriate.
+   Redis holds cart data; orders and accounts are stored in private RDS.
+3. The order service records an order and outbox event together in the database.
+   The publisher reads the outbox and sends a message to SQS with its own IAM role.
+4. The worker receives the message with a different role, records its receipt and
+   acknowledges it. Duplicate-delivery handling matters because SQS can redeliver.
+5. Failed messages eventually reach the DLQ; CloudWatch alarm → SNS email and
+   Prometheus alert → Alertmanager → Slack are separate notification paths.
+
+Payment integration is a sandbox exercise: test credentials must be separately
+configured, and a successful deployment does not itself prove a payment, refund,
+order or notification has worked.
+
+## Reference: pipeline, step by step
+
+### PR and image checks
+
+A developer creates a branch and opens a PR against `main`. The `CI` workflow starts
+on the PR and on pushes to `main`. `Configuration checks` selects affected images,
+validates workflow syntax, shell scripts, secrets, Terraform format/provider/mock
+tests, Python tests and chart renders, and scans Terraform. `scripts/changes.py`
+compares changed paths without executing code from those paths. Frontend-only
+changes select frontend; a cart-only path selects cart without selecting Java orders;
+workflow and shared build-script changes select all four. A docs-only change does
+not build images. This optimization does not eliminate the configuration checks.
+
+Each selected image runs the reusable `image.yml` workflow. Its Dockerfile builds
+and runs that component's tests; the runtime image must declare a non-root user.
+Trivy scans the image and produces a CycloneDX SBOM; HIGH/CRITICAL findings fail
+the scan. Selected components run as a parallel matrix with independent BuildKit
+caches. The single `Required checks` gate succeeds only when configuration passed
+and selected image builds passed or were legitimately skipped. A successful gate
+is evidence of those checks, not evidence of a real EKS deployment.
+
+Code-S-12 reviews the source PR under the repository's branch protection. A
+reviewer should inspect the diff and check results; a bot passing checks does not
+act as an independent human reviewer. Merging then triggers the main workflow.
+
+### Publish and propose a release
+
+With `DELIVERY_ENABLED=true` and a qualifying main push, the workflow exports the
+**same tested runtime image** as an artifact, then the publisher job loads it;
+it does not rebuild the image. It assumes the registry role using GitHub OIDC,
+pushes an immutable commit tag to the correct ECR repo, obtains its digest, signs
+it with Cosign and attaches an SBOM attestation. The immutable-tag check refuses a
+conflicting image under the same source tag. Security evidence and release records
+are workflow artifacts with the retention specified in YAML; the ECR image is
+separately retained. Signature generation does not install an admission policy.
+
+The release-proposal job fetches current `main` and refuses to create a stale
+proposal if relevant application, workflow or script code changed since the build.
+`release.py` validates component, source SHA, ECR account/region and digest shape,
+then merges new records with existing reviewed digests for unchanged components.
+The dedicated GitHub App opens a PR updating `deploy/release.json`. Reviewers verify
+the signature and SBOM for each candidate digest and review the deployment diff.
+On the first release, the manifest needs all four images; an affected-only build
+cannot invent missing prior digests. Merge the release PR when approved.
+
+The App token is for a scoped GitHub installation; the AWS role is a different
+identity. The App can open a PR, but its token must not bypass required checks or
+human review. The App's manual verification workflow is an authentication check;
+it is not an end-to-end release test.
+
+### Infrastructure plan and approval
+
+The manual `AWS infrastructure` workflow operates only on main when
+`INFRA_ENABLED=true`. Its plan job assumes the plan role and loads session variables
+from the protected environment secret. For destroy, it checks the exact confirmation
+phrase. Terraform saves a binary plan privately to versioned S3; the job passes its
+object version and SHA-256 to the next job. Plans may contain passwords and expire
+according to the bucket lifecycle; do not publish them as build artifacts.
+
+The apply job waits for the `infrastructure-apply` environment's independent
+reviewer, assumes a separate apply identity, downloads that exact object version,
+checks its hash and applies it. Approval is for the displayed plan and source
+revision; a stale/expired/changed-state plan must be regenerated and reviewed.
+For destroy, it first checks the session VPC for load balancers and checks for
+project-tagged CSI volumes. A failure blocks that workflow apply. This is a partial
+guard: it does not discover every untagged orphan or stop a local Terraform apply.
+The apply role still needs to be designed, scoped, provisioned and live-tested.
+Also review whether the configured one-hour AWS credentials cover the 90-minute
+job; an expired session during a long apply needs a safe retry strategy.
+
+### Argo CD and Kubernetes
+
+The platform helper installs Argo CD; Argo watches the public repository's main
+branch and the chart path. Its Application renders values in order from environment
+and release files. When desired state changes, automated sync applies it; `selfHeal`
+repairs supported drift and `prune` removes objects no longer in desired state.
+A release PR merge can therefore change the running pods after Argo polls and syncs,
+provided the app is enabled and the cluster is healthy. It is not a guarantee of
+an instant successful rollout. Check Argo sync/health, pod events, readiness and
+ALB targets. Readiness stops unready pods receiving Service traffic; liveness and
+startup probes handle different failure conditions. HPA changes selected replica
+counts based on CPU; it does not add nodes. Argo ignores those replica differences
+for the selected deployments so it doesn't fight the autoscaler.
+
+A reviewed Git revert points Argo back to a previous desired image/configuration;
+it doesn't undo database changes, messages, refunds or payments. Keep migrations
+backward-compatible and test recovery. This project does not currently implement
+unattended application or database rollback.
+
+## Reference: scripts and how to read them
+
+You don't need to become a Python developer, but you should read code at the level
+needed to identify **input → validation → action → output → failure**. Start with
+`python3 -m unittest discover -s tests -v`, then read the code and test together.
+
+* `scripts/changes.py`: takes GitHub event JSON and a Git diff, selects allowed
+  components and emits a JSON matrix through `GITHUB_OUTPUT`. Understand the special
+  cart path, the full-rebuild triggers and what happens when a base SHA is missing.
+* `scripts/release.py`: reads publisher JSON records, validates source SHA and exact
+  ECR digest/account/region/component, combines them with existing release values,
+  then writes `deploy/release.json` only when records were supplied. It validates
+  digest shape and location, not cryptographic signatures.
+* `scripts/check_chart.py`: renders disabled and fully enabled profiles using dummy
+  data, checks security properties and validates standard Kubernetes schemas. It
+  uses temporary files and caches pinned schemas with bounded downloads. Operator
+  CRDs are structurally checked here, not live-admitted by a cluster.
+* `scripts/inventory.py`: checks the expected account, runs a fixed read-only list
+  of AWS queries, records private timestamped JSON, and reports errors as incomplete.
+  It does not delete anything or guarantee coverage of every region/service.
+* `scripts/secrets.py`: requires the dedicated Kubernetes context, preserves an
+  existing secret, generates a Grafana password or accepts a hidden Slack webhook,
+  and passes the Kubernetes object over stdin. It does not create an AWS secret.
+* `scripts/platform.sh`: verifies account, cluster and endpoint before installing
+  pinned Helm releases or cleaning up. Teardown requires the exact confirmation
+  phrase and must run while the cluster/controller still exists.
+* `scripts/tools.sh`: downloads selected pinned CI tools and verifies checksums.
+  Review the source, checksum and version before changing a pin. `.work` is local,
+  ignored workspace material and must not be committed.
+
+Useful read-only commands, run from the repository root with the correct context:
+
+```bash
+# Git and GitHub
+ git status --short --branch
+ git log --oneline -8
+ gh pr list --repo Narx-Space-Prod/commerce-aws
+ gh run list --repo Narx-Space-Prod/commerce-aws --limit 10
+# AWS identity and infrastructure
+ aws sts get-caller-identity --profile commerce-learning
+ aws eks list-clusters --region ap-south-1 --profile commerce-learning
+ aws ecr describe-repositories --region ap-south-1 --profile commerce-learning
+# Kubernetes, after the cluster and dedicated context exist
+ kubectl --context commerce-aws get nodes
+ kubectl --context commerce-aws get pods -A
+ kubectl --context commerce-aws -n commerce get deploy,svc,hpa,ingress,pvc
+ kubectl --context commerce-aws -n argocd get applications
+```
+
+Commands that create infrastructure, change Git, post messages, access secrets or
+delete data require the correct identity and an intentional reviewed operation.
+A `describe` or `get` failure is not proof the resource is absent: check identity,
+region, network, permissions and CLI error first.
+
+## Reference: first session checklist and incident thinking
+
+**Before applying:** confirm the exact AWS account/region, MFA and current login;
+check the latest budget/credits and actual prices; check current operator public
+IP; verify the state bucket and branch protections; make sure the apply role and
+plan role are provisioned/tested; inspect the saved plan, session duration, quota,
+image and DNS prerequisites; record baseline inventory and a stop time. Verify
+backup requirements and whether the session is disposable. No budget alert makes
+a hard cap. AWS Free plan/service eligibility must be checked for the account;
+seeing an empty EKS console does not establish eligibility.
+
+**After applying:** verify cluster and node readiness, install platform components,
+confirm SNS email, configure only intended Slack routing, validate secret access,
+review and merge the release, then check Argo, pods, ingress, health and a sandbox
+transaction. Record what was actually exercised and any failures. Avoid assuming
+that a successful Terraform apply proves the app or alerting works.
+
+**When a release fails:** identify the layer before changing anything. A failed PR
+check needs its Actions log; a failed publish needs ECR/OIDC/signature logs; an
+absent release PR needs the `DELIVERY_ENABLED` flag, selected components and
+proposal job; an OutOfSync Application needs Argo's diff/events; an unhealthy pod
+needs describe/events/logs; an unreachable public URL needs DNS, ACM, ingress, ALB
+listeners/targets and network checks. Never disable security controls simply to
+make a check green. Preserve evidence, choose a reviewed revert if appropriate,
+then verify recovery.
+
+**When a destroy fails:** keep the cluster and controllers available until ingress
+and PVC cleanup is finished; inspect ALB/VPC and tagged CSI volumes, retry the
+reviewed plan, compare pre/post inventories, inspect untagged resources and review
+Billing later. A manual RDS snapshot can be kept deliberately, but has ongoing
+storage cost. A scheduled KMS deletion or retained logs/images/state can also remain
+after the session; check their current lifecycle and charges. Do not delete
+unrelated baseline resources. If state has no VPC output after a partial apply,
+the workflow guard fails closed; investigate the partial state and resources before
+choosing a documented recovery path.
+
+### Practice path and interview questions
+
+Work through a reviewed PR and affected build; inspect an image digest and SBOM;
+explain OIDC and trust vs permission policies; trace traffic to a pod and DB;
+observe Argo sync; diagnose a failing readiness probe; test SQS/DLQ and an alert;
+restore a database snapshot and verify data; rehearse a Git revert; destroy the
+session and compare inventory with baseline. For each exercise, record the trigger,
+expected result, actual evidence, failure, fix, cost and cleanup.
+
+Be able to answer: Why two state roots? Why is a digest safer than `latest`? Why
+must apply use the reviewed plan version? Why can HPA leave pods Pending? Why isn't
+an EKS control plane a guarantee of app availability? How do IAM trust and permission
+policies differ? Why can an ALB survive a broken cluster teardown? Why doesn't a Git
+revert undo a payment? Why is an AWS Budget not a spending cap? Explain the project's
+actual tradeoffs rather than claiming multi-AZ availability or untested recovery.
+
 
 ## Primary references
 
