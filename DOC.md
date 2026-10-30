@@ -436,6 +436,27 @@ prove that an IAM policy is sufficient or safely scoped.
 These role policies and GitHub App credentials are an AWS activation prerequisite,
 not something the unconfigured workflows can silently invent for your account.
 
+The reviewed `infrastructure/bootstrap/plan-identity.tf` defines the plan role.
+The existing MFA bootstrap role deliberately cannot create new IAM roles. Have an
+AWS administrator create this role and its inline policy from the reviewed Terraform
+documents, then import both resources into the existing bootstrap state before any
+bootstrap apply. Use the same private variable file and MFA bootstrap profile used
+for the original imports:
+
+```bash
+terraform -chdir=infrastructure/bootstrap import -var-file=../../.work/bootstrap-access.tfvars.json aws_iam_role.plan commerce-aws-plan
+terraform -chdir=infrastructure/bootstrap import -var-file=../../.work/bootstrap-access.tfvars.json aws_iam_role_policy.plan commerce-aws-plan:commerce-aws-plan
+terraform -chdir=infrastructure/bootstrap plan -var-file=../../.work/bootstrap-access.tfvars.json
+```
+
+Confirm the plan shows no changes to these imported resources. Set
+`AWS_PLAN_ROLE_ARN` to the resulting role ARN. The role can read session state and
+write its lock and saved plans, so treat it as sensitive; it cannot overwrite the
+state or deploy the session. Its discovery permissions and access to the runtime
+secret need review and verification against a real plan. Creating this identity alone
+does not deploy an EKS cluster. Keep `INFRA_ENABLED=false` until the separate apply
+identity and all activation checks are complete.
+
 ## 4. Create the session infrastructure
 
 For the first session you can plan locally using your reviewed SSO operator role.
