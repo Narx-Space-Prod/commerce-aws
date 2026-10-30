@@ -32,6 +32,13 @@ variables {
 run "security_boundaries" {
   command = apply
   assert {
+    condition = (
+      toset([for specification in aws_launch_template.node.tag_specifications : specification.resource_type]) == toset(["instance", "volume", "network-interface"]) &&
+      alltrue([for specification in aws_launch_template.node.tag_specifications : specification.tags["Project"] == "commerce-aws"])
+    )
+    error_message = "The managed node's instances, volumes and interfaces need project ownership tags at creation."
+  }
+  assert {
     condition     = aws_db_instance.this.storage_encrypted && !aws_db_instance.this.publicly_accessible && !aws_db_instance.this.multi_az
     error_message = "The learning DB must be encrypted, private and single-AZ."
   }

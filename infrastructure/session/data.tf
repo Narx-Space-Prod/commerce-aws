@@ -37,6 +37,7 @@ resource "aws_db_instance" "this" {
   multi_az                     = false
   publicly_accessible          = false
   backup_retention_period      = 1
+  copy_tags_to_snapshot        = true
   auto_minor_version_upgrade   = true
   deletion_protection          = false
   skip_final_snapshot          = true

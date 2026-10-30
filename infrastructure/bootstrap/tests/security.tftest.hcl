@@ -8,6 +8,10 @@ variables {
 run "retained_foundation" {
   command = apply
   assert {
+    condition     = aws_budgets_budget.session.cost_types[0].include_tax && !aws_budgets_budget.session.cost_types[0].include_credit
+    error_message = "Tax must count toward the budget; promotional credits must not mask gross resource usage."
+  }
+  assert {
     condition     = aws_s3_bucket_versioning.state.versioning_configuration[0].status == "Enabled" && !aws_s3_bucket.state.force_destroy
     error_message = "Retain versioned Terraform state across sessions."
   }
