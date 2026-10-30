@@ -13,7 +13,8 @@ COMPONENTS = {
 
 
 def select(paths):
-    if any(p.startswith(('.github/workflows/', 'scripts/')) for p in paths):
+    build_scripts = {'scripts/changes.py', 'scripts/release.py', 'scripts/tools.sh'}
+    if any(p.startswith('.github/workflows/') or p in build_scripts for p in paths):
         return list(COMPONENTS)
     selected = set()
     for path in paths:

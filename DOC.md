@@ -118,6 +118,41 @@ charges. CPU credits can also matter for burstable instances.
 A ₹1,000 target requires short, planned sessions and a current regional estimate.
 This repository makes no guarantee that a fixed number of sessions fits that sum.
 
+The agreed region is Mumbai (`ap-south-1`) and the monthly target is ₹1,000.
+Before creating anything, inventory the selected account and review current Billing,
+including existing resources in other regions. The default account-wide warning
+threshold is a conservative USD 8, with alerts at 50%/80% actual and 100% forecast.
+Taxes count; credits/refunds do not mask gross usage. Check the actual INR conversion
+and invoice taxes before setting this threshold. No USD threshold guarantees an INR cap.
+
+## Account inventory and ownership tracking
+
+Terraform tracks directly managed resources. Kubernetes controllers own additional
+resources: the managed node group creates EC2 instances, root disks and interfaces;
+EBS CSI provisions PVC disks; the load-balancer controller creates ALBs, target
+groups and security groups. Project tags are explicitly applied to these paths;
+Terraform provider tags alone do not propagate to every child resource.
+
+Take a baseline after secure login and another inventory after each session:
+
+```bash
+python3 scripts/inventory.py --profile commerce-learning --account YOUR_12_DIGIT_ACCOUNT_ID
+```
+
+This helper only lists/describes resources, verifies the expected account before
+querying them, includes untagged/pre-existing resources and writes a private,
+timestamped JSON report under gitignored `.work/inventory/`. A permission failure
+makes the report incomplete and exits nonzero; it does not mean resources are absent.
+It never retrieves secret values, creates resources or deletes resources. Keep the
+baseline to distinguish this project from existing work; never delete unrelated
+resources simply because they appear in the report. It covers the main Mumbai
+services plus global S3 bucket and Route 53 zone names, not every AWS service/region or a billing audit.
+
+Tagging is ownership evidence, not proof of zero charges. After teardown compare
+inventories, inspect service-owned remnants and retained resources, then review
+Billing after its reporting delay. A default VPC or unrelated existing resource
+must not be destroyed as part of this project's cleanup.
+
 ## Security and review boundaries
 
 Use a dedicated learning AWS account if available, MFA on the root account and an
@@ -214,7 +249,9 @@ docker build -t commerce/cart:check application/orders/cart
 
 Do not run all four builds simultaneously on a small laptop. GitHub-hosted runners
 build affected components in parallel, with independent caches. A cart-only change
-does not rebuild Java. Deployment/docs-only changes do not rebuild application images.
+does not rebuild Java. Deployment/docs/inventory-only changes do not rebuild images.
+Workflow changes and the shared build/release/tool scripts revalidate all images;
+platform installation and inventory helpers do not invalidate application layers.
 
 ## 2. Review AWS access, budget and retained bootstrap
 
@@ -518,7 +555,8 @@ predictable. Preserve data with a manual snapshot before approving destroy.
 ```bash
 snapshot="commerce-aws-manual-$(date -u +%Y%m%d%H%M%S)"
 aws rds create-db-snapshot --db-instance-identifier commerce-aws \
-  --db-snapshot-identifier "$snapshot" --region ap-south-1
+  --db-snapshot-identifier "$snapshot" --region ap-south-1 \
+  --tags Key=Project,Value=commerce-aws Key=Environment,Value=learning Key=ManagedBy,Value=manual-backup
 aws rds wait db-snapshot-available --db-snapshot-identifier "$snapshot" --region ap-south-1
 aws rds describe-db-snapshots --db-snapshot-identifier "$snapshot" --region ap-south-1
 ```
@@ -567,10 +605,11 @@ outputs, permissions, side effects, failures and how to rerun safely.
 
 | Script | What to understand |
 |---|---|
-| `changes.py` | Git diff selects components; workflows/scripts invalidate all builds; cart is independent of Java |
+| `changes.py` | Git diff selects components; workflows/build scripts invalidate all builds; inventory/platform changes do not; cart is independent of Java |
 | `release.py` | Publisher records merge into one JSON manifest; exact component/account/region/digest validation |
 | `check_chart.py` | Temporary enabled/disabled renders, core API schemas and container security checks; no cloud access |
 | `secrets.py` | Hidden Slack input, generated Grafana password, fixed context/scope, preservation, stdin-only secret writes |
+| `inventory.py` | Read-only before/after resource reports, account guard, untagged resources and explicit incomplete-result handling |
 
 The shell helpers install checksum-verified tools and perform explicit EKS platform
 installation/cleanup. CI YAML orchestrates steps; Terraform describes AWS resources;

@@ -58,6 +58,18 @@ resource "aws_iam_role_policy_attachment" "node" {
 }
 resource "aws_launch_template" "node" {
   name_prefix = "${var.name}-"
+  # Node-group tags do not propagate to its instances or their root volumes.
+  dynamic "tag_specifications" {
+    for_each = toset(["instance", "volume", "network-interface"])
+    content {
+      resource_type = tag_specifications.value
+      tags = {
+        Project     = var.name
+        Environment = "learning"
+        ManagedBy   = "eks-managed-node-group"
+      }
+    }
+  }
   metadata_options {
     http_endpoint               = "enabled"
     http_tokens                 = "required"

@@ -5,7 +5,12 @@ provisioner: ebs.csi.aws.com
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 reclaimPolicy: Delete
-parameters: {type: gp3, encrypted: 'true'}
+parameters:
+  type: gp3
+  encrypted: 'true'
+  tagSpecification_1: Project=commerce-aws
+  tagSpecification_2: Environment=learning
+  tagSpecification_3: ManagedBy=ebs-csi-driver
 ---
 apiVersion: v1
 kind: Namespace

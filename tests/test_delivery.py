@@ -20,6 +20,9 @@ class DeliveryBoundaries(unittest.TestCase):
     def test_workflow_changes_rebuild_all(self):
         self.assertEqual(len(module('changes').select(['.github/workflows/ci.yml'])), 4)
 
+    def test_inventory_and_platform_changes_do_not_rebuild_images(self):
+        self.assertEqual(module('changes').select(['scripts/inventory.py', 'scripts/platform.sh', 'deploy/platform/storage.yaml']), [])
+
     def test_release_rejects_mutable_foreign_or_missing_images(self):
         release = module('release')
         images = {name: f'123456789012.dkr.ecr.ap-south-1.amazonaws.com/commerce-aws/{name}@sha256:' + 'a' * 64 for name in release.COMPONENTS}
