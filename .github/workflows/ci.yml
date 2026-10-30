@@ -27,6 +27,7 @@ jobs:
           bash scripts/tools.sh actionlint gitleaks
           export PATH="$RUNNER_TEMP/bin:$PATH"
           actionlint -color
+          shellcheck -x scripts/tools.sh scripts/platform.sh
           printf '[extend]\nuseDefault = true\n' > "$RUNNER_TEMP/gitleaks.toml"
           gitleaks git . --log-opts=--all --redact --no-banner --config "$RUNNER_TEMP/gitleaks.toml" --ignore-gitleaks-allow --gitleaks-ignore-path "$RUNNER_TEMP/no-ignored-secrets"
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1

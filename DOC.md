@@ -582,8 +582,12 @@ results rather than describing prepared YAML as a completed production deploymen
 * [EKS pricing](https://aws.amazon.com/eks/pricing/)
 * [EKS supported Kubernetes versions](https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions-standard.html)
 * [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html)
+* [Pod Identity trust conditions](https://docs.aws.amazon.com/eks/latest/userguide/pod-id-role.html)
 * [EKS default envelope encryption](https://docs.aws.amazon.com/eks/latest/userguide/envelope-encryption.html)
 * [CloudTrail event history](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/view-cloudtrail-events.html)
 * [GitHub AWS OIDC](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws)
 * [Terraform S3 backend and locking](https://developer.hashicorp.com/terraform/language/backend/s3)
 * [AWS Load Balancer Controller v3.6.2 IAM policy](https://github.com/kubernetes-sigs/aws-load-balancer-controller/blob/v3.6.2/docs/install/iam_policy.json)
+Pod Identity trust also requires the documented `eks-cluster-arn` request tag to
+match this exact account/region/cluster. Keep session tags enabled on associations.
+

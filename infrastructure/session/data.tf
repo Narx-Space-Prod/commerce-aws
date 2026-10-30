@@ -68,7 +68,7 @@ resource "aws_secretsmanager_secret_version" "runtime" {
 locals {
   pod_trust = jsonencode({ Version = "2012-10-17", Statement = [{
     Effect    = "Allow", Principal = { Service = "pods.eks.amazonaws.com" }, Action = ["sts:AssumeRole", "sts:TagSession"],
-    Condition = { StringEquals = { "aws:SourceAccount" = var.account_id } }
+    Condition = { StringEquals = { "aws:RequestTag/eks-cluster-arn" = "arn:aws:eks:${var.region}:${var.account_id}:cluster/${var.name}" } }
   }] })
 }
 resource "aws_iam_role" "delivery" {
