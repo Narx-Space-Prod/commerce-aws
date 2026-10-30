@@ -19,6 +19,8 @@ jobs:
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: Narx-Space-Prod
           repositories: commerce-aws
+          permission-contents: write
+          permission-pull-requests: write
       - name: Verify repository and effective permissions
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
