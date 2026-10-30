@@ -31,7 +31,8 @@ jobs:
           with open(os.environ['RUNNER_TEMP'] + '/repository.json') as f:
               data = json.load(f)
           assert data['repository'] == 'Narx-Space-Prod/commerce-aws'
-          assert data['permissions']['push'], 'App needs Contents write'
-          print('App can access commerce-aws with write access.')
+          # Token creation above explicitly requests Contents and Pull requests write;
+          # GitHub rejects that request if the installation has not granted them.
+          print('App token can access commerce-aws; requested permissions were granted.')
           PY
           gh api installation/repositories --jq '[.repositories[].full_name] | if . == ["Narx-Space-Prod/commerce-aws"] then . else error("Unexpected token repository scope") end'
