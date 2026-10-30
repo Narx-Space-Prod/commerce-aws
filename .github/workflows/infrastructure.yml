@@ -66,7 +66,7 @@ jobs:
           test "$version" != None
           printf 'checksum=%s\nversion=%s\n' "$checksum" "$version" >> "$GITHUB_OUTPUT"
           printf 'key=plans/%s/%s.tfplan\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
-          printf 'Review the Terraform plan in this job before approving Apply. Source: `%s`. Operation: `%s`.\n' "$GITHUB_SHA" "$OPERATION" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Review the Terraform plan in this job before approving Apply. Source: %s. Operation: %s.\n' "$GITHUB_SHA" "$OPERATION" >> "$GITHUB_STEP_SUMMARY"
   apply:
     name: Apply reviewed saved plan
     needs: plan

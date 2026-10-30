@@ -126,6 +126,6 @@ jobs:
           c = os.environ['COMPONENT']
           Path(f'release-{c}.json').write_text(json.dumps({'component': c, 'image': os.environ['REFERENCE'], 'source': os.environ['GITHUB_SHA']}) + '\n')
           PY
-          printf 'Published and signed `%s`\n' "$REFERENCE" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Published and signed %s\n' "$REFERENCE" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: 'release-${{ inputs.component }}', path: 'release-${{ inputs.component }}.json', retention-days: 7}

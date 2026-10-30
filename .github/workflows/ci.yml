@@ -131,5 +131,5 @@ jobs:
           # Token through credential helper, never command-line arguments or persisted git config.
           gh auth setup-git
           git push origin "$branch"
-          printf 'Deploy the tested, scanned and signed ECR image digests from source `%s`.\n\nReview the CI evidence and deployment diff before merging.\n' "$SOURCE" > "$RUNNER_TEMP/release-body.md"
+          printf 'Deploy the tested, scanned and signed ECR image digests from source %s.\n\nReview the CI evidence and deployment diff before merging.\n' "$SOURCE" > "$RUNNER_TEMP/release-body.md"
           gh pr create --base main --head "$branch" --title "Release Commerce ${SOURCE:0:12}" --body-file "$RUNNER_TEMP/release-body.md"
