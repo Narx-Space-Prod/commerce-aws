@@ -91,7 +91,7 @@ locals {
 }
 resource "aws_iam_role" "delivery" {
   for_each           = toset(["publisher", "worker"])
-  name               = "${var.name}-${each.key}"
+  name               = "${var.name}-session-${each.key}"
   assume_role_policy = local.pod_trust
 }
 resource "aws_iam_role_policy" "delivery" {

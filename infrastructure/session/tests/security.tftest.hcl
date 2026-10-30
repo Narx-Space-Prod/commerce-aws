@@ -51,6 +51,10 @@ run "security_boundaries" {
     error_message = "Require IMDSv2 and prevent ordinary pods using node-role credentials."
   }
   assert {
+    condition     = aws_iam_role.delivery["publisher"].name == "commerce-aws-session-publisher" && aws_iam_role.delivery["worker"].name == "commerce-aws-session-worker"
+    error_message = "Session delivery roles must not collide with the retained ECR publisher role."
+  }
+  assert {
     condition     = jsondecode(aws_iam_role_policy.delivery["publisher"].policy).Statement[0].Action == ["sqs:SendMessage"]
     error_message = "The publisher must not consume or delete messages."
   }
