@@ -94,11 +94,23 @@ jobs:
           VERSION: ${{ needs.plan.outputs.version }}
           CHECKSUM: ${{ needs.plan.outputs.checksum }}
           KEY: ${{ needs.plan.outputs.key }}
+          OPERATION: ${{ inputs.operation }}
         run: |
           set -euo pipefail
           umask 077
           trap 'rm -f "$RUNNER_TEMP/session.tfplan"' EXIT
           terraform -chdir=infrastructure/session init -input=false -backend-config="bucket=$BUCKET" -backend-config="key=session/terraform.tfstate" -backend-config="region=$REGION" -backend-config=encrypt=true -backend-config=use_lockfile=true
+          if [ "$OPERATION" = destroy ]; then
+            # Controllers must finish deleting their AWS resources before EKS disappears.
+            vpc=$(terraform -chdir=infrastructure/session output -raw vpc_id)
+            test -n "$vpc"
+            load_balancers=$(aws elbv2 describe-load-balancers --region "$REGION" --output json | jq --arg vpc "$vpc" '[.LoadBalancers[] | select(.VpcId == $vpc)] | length')
+            volumes=$(aws ec2 describe-volumes --region "$REGION" --filters Name=tag:Project,Values=commerce-aws Name=tag:ManagedBy,Values=ebs-csi-driver --output json | jq '.Volumes | length')
+            if [ "$load_balancers" != 0 ] || [ "$volumes" != 0 ]; then
+              echo "Teardown blocked: $load_balancers load balancer(s) in the session VPC and $volumes project CSI volume(s) remain. Complete Kubernetes cleanup and retry." >&2
+              exit 1
+            fi
+          fi
           aws s3api get-object --bucket "$BUCKET" --key "$KEY" --version-id "$VERSION" "$RUNNER_TEMP/session.tfplan" > /dev/null
           printf '%s  %s\n' "$CHECKSUM" "$RUNNER_TEMP/session.tfplan" | sha256sum --check --strict
           terraform -chdir=infrastructure/session apply -lock-timeout=5m "$RUNNER_TEMP/session.tfplan"
