@@ -2,9 +2,26 @@ resource "aws_db_subnet_group" "this" {
   name       = var.name
   subnet_ids = aws_subnet.database[*].id
 }
+data "aws_rds_engine_version" "postgres" {
+  engine                 = "postgres"
+  parameter_group_family = "postgres17"
+  latest                 = true
+}
+resource "aws_db_parameter_group" "this" {
+  name_prefix = "${var.name}-"
+  family      = "postgres17"
+  parameter {
+    name         = "rds.force_ssl"
+    value        = "1"
+    apply_method = "pending-reboot"
+  }
+  lifecycle { create_before_destroy = true }
+}
 resource "aws_db_instance" "this" {
   identifier                   = var.name
   engine                       = "postgres"
+  engine_version               = data.aws_rds_engine_version.postgres.version
+  parameter_group_name         = aws_db_parameter_group.this.name
   instance_class               = "db.t4g.micro"
   allocated_storage            = 20
   max_allocated_storage        = 25

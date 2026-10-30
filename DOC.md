@@ -150,6 +150,9 @@ verify the RDS TLS certificate and hostname. A sync Job creates a limited login
 for the application; regular workloads never receive the RDS master password.
 The TLS CA bundle is public trust material, not a private key.
 
+Pod Identity trust also requires the documented `eks-cluster-arn` request tag to
+match this exact account/region/cluster. Keep session tags enabled on associations.
+
 Terraform state contains generated secrets. S3 is private, encrypted, versioned and
 TLS-only. Backend locks use S3 lockfiles. Saved infrastructure plans contain secrets
 too: the workflow stores them privately in S3, passes their object version/checksum
@@ -372,9 +375,12 @@ Actions/Argo remain the delivery status source.
 
 ## 6. Configure HTTPS and the first signed release
 
-Request an ACM certificate **in the ALB region**, validate ownership through DNS and
-wait for ISSUED. An existing domain can be reused; buying a domain is optional and
-costs extra. Route 53 is one option; it is not automatically provisioned by Terraform.
+For an existing Route 53 public hosted zone, set `shop_hostname` and
+`route53_zone_id` in the session variables. Terraform provisions the regional ACM
+certificate and its DNS validation record and waits for issuance. It does not buy a
+domain or create a paid hosted zone. With external DNS instead, request/validate a
+certificate manually **in the ALB region** and wait for ISSUED. Domain purchases
+and hosted-zone charges are separate from this project's session resources.
 
 Use the non-secret Terraform output ARNs in `deploy/config.example.yaml`, update
 host/certificate/publicOrigin, then copy its reviewed contents to
@@ -588,6 +594,4 @@ results rather than describing prepared YAML as a completed production deploymen
 * [GitHub AWS OIDC](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws)
 * [Terraform S3 backend and locking](https://developer.hashicorp.com/terraform/language/backend/s3)
 * [AWS Load Balancer Controller v3.6.2 IAM policy](https://github.com/kubernetes-sigs/aws-load-balancer-controller/blob/v3.6.2/docs/install/iam_policy.json)
-Pod Identity trust also requires the documented `eks-cluster-arn` request tag to
-match this exact account/region/cluster. Keep session tags enabled on associations.
 

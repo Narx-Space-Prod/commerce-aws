@@ -1,4 +1,7 @@
 mock_provider "aws" {
+  mock_data "aws_rds_engine_version" {
+    defaults = { version = "17.7" }
+  }
   mock_resource "aws_iam_role" {
     defaults = { arn = "arn:aws:iam::123456789012:role/test-role" }
   }
