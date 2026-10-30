@@ -4,6 +4,7 @@
 *.tfstate*
 *.tfplan
 *.tfvars
+*.tfvars.json
 !*.example.tfvars
 backend.hcl
 .work/

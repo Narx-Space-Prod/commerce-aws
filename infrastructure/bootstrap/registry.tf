@@ -12,6 +12,15 @@ variable "existing_github_oidc_provider_arn" {
 locals {
   repository   = "Narx-Space-Prod/commerce-aws"
   provider_arn = coalesce(var.existing_github_oidc_provider_arn, try(aws_iam_openid_connect_provider.github[0].arn, null))
+  ecr_names    = toset(["frontend", "catalogue", "orders", "cart"])
+  ecr_arns     = [for name in sort(tolist(local.ecr_names)) : "arn:aws:ecr:${var.aws_region}:${var.account_id}:repository/commerce-aws/${name}"]
+  publisher_statements = [
+    { Effect = "Allow", Action = ["ecr:GetAuthorizationToken"], Resource = ["*"] },
+    { Effect = "Allow", Resource = local.ecr_arns, Action = [
+      "ecr:BatchGetImage", "ecr:DescribeImages", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability",
+      "ecr:InitiateLayerUpload", "ecr:UploadLayerPart", "ecr:CompleteLayerUpload", "ecr:PutImage"
+    ] }
+  ]
 }
 resource "aws_iam_openid_connect_provider" "github" {
   count          = var.existing_github_oidc_provider_arn == null ? 1 : 0
@@ -19,7 +28,7 @@ resource "aws_iam_openid_connect_provider" "github" {
   client_id_list = ["sts.amazonaws.com"]
 }
 resource "aws_ecr_repository" "component" {
-  for_each             = toset(["frontend", "catalogue", "orders", "cart"])
+  for_each             = local.ecr_names
   name                 = "commerce-aws/${each.key}"
   force_delete         = false
   image_tag_mutability = "IMMUTABLE"
@@ -28,7 +37,8 @@ resource "aws_ecr_repository" "component" {
   lifecycle { prevent_destroy = true }
 }
 resource "aws_iam_role" "publisher" {
-  name = "commerce-aws-publisher"
+  name                 = "commerce-aws-publisher"
+  permissions_boundary = var.bootstrap_user_arn == null ? null : aws_iam_policy.publisher_boundary[0].arn
   assume_role_policy = jsonencode({ Version = "2012-10-17", Statement = [{
     Effect = "Allow", Action = "sts:AssumeRoleWithWebIdentity", Principal = { Federated = local.provider_arn },
     Condition = { StringEquals = {
@@ -38,14 +48,8 @@ resource "aws_iam_role" "publisher" {
   }] })
 }
 resource "aws_iam_role_policy" "publisher" {
-  role = aws_iam_role.publisher.id
-  policy = jsonencode({ Version = "2012-10-17", Statement = [
-    { Effect = "Allow", Action = "ecr:GetAuthorizationToken", Resource = "*" },
-    { Effect = "Allow", Resource = [for repo in aws_ecr_repository.component : repo.arn], Action = [
-      "ecr:BatchGetImage", "ecr:DescribeImages", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability",
-      "ecr:InitiateLayerUpload", "ecr:UploadLayerPart", "ecr:CompleteLayerUpload", "ecr:PutImage"
-    ] }
-  ] })
+  role   = aws_iam_role.publisher.id
+  policy = jsonencode({ Version = "2012-10-17", Statement = local.publisher_statements })
 }
 resource "aws_s3_bucket_lifecycle_configuration" "plans" {
   bucket = aws_s3_bucket.state.id

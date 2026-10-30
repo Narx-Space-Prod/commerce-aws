@@ -255,9 +255,11 @@ platform installation and inventory helpers do not invalidate application layers
 
 ## 2. Review AWS access, budget and retained bootstrap
 
-Before spending, choose the account, region, session duration and current cost
-estimate. The example uses Mumbai (`ap-south-1`), not an automatically approved
-choice. Log in with AWS SSO and verify the exact account:
+Before spending, verify the account, agreed Mumbai region (`ap-south-1`), session
+duration and current cost estimate. If IAM Identity Center is already configured,
+you can use the SSO commands below. For this project's standalone account, use the
+non-root console-login path after the example; do not create an organization just
+to follow an SSO example.
 
 ```bash
 aws configure sso --profile commerce-learning
@@ -267,6 +269,82 @@ aws sts get-caller-identity
 aws ec2 describe-availability-zones --region ap-south-1
 aws iam list-open-id-connect-providers
 ```
+
+For this account, initial access uses the non-root `commerce-operator` IAM user with
+MFA and `aws login --remote --profile commerce-learning --region ap-south-1`.
+The user belongs to the read-only `commerce-observers` group with
+`ReadOnlyAccess` and `SignInLocalDevelopmentAccess`; no permanent access keys are
+needed. Use existing Identity Center if already available. Creating/joining an AWS
+Organization can expire Free Tier credits; do not enable an organization as an
+incidental login setup step. A direct paid-plan upgrade has different credit rules;
+review that separately only if a required service actually needs it.
+
+### Scoped access for the first foundation apply
+
+Read-only access can inventory and plan; it cannot create the budget, state bucket,
+registry or publisher role. `bootstrap/access.tf` defines an optional human setup
+role named `commerce-aws-bootstrap`. It trusts one exact IAM user, requires MFA and
+limits sessions to one hour. Its writes cover only the named state bucket, four
+ECR repositories, the `commerce-aws` budget, GitHub OIDC and the bounded publisher
+role. It cannot create EKS/EC2/RDS, modify its own access, or rewrite/remove the
+publisher boundary. The observer group's permissions stay read-only.
+
+There is a one-time identity bootstrap: root creates four **IAM-only** objects
+from the reviewed definitions, which are then imported into Terraform. Root is
+needed because the observer cannot grant itself permissions. These objects must
+be tracked before applying the chargeable foundation; they are not an unrecorded
+exception to infrastructure ownership. No `AdministratorAccess` policy is used.
+
+1. Set `bootstrap_user_arn` in your private bootstrap variables to the exact
+   non-root user ARN verified with STS. Generate a **plan**, not an apply. The
+   `bootstrap_access_documents` planned output contains the trust JSON, write JSON,
+   publisher boundary JSON and exact names/descriptions/tags. These documents have
+   account identifiers but no credentials. Keep the full plan private: it also
+   includes notification contact details.
+2. In the root console, create customer-managed policy
+   `commerce-aws-publisher-boundary` from the exported boundary JSON, using its
+   exported description and tags. This caps the publisher at its four ECR repos.
+3. Create role `commerce-aws-bootstrap` using **Custom trust policy** and the
+   exported trust JSON. Attach AWS-managed `ReadOnlyAccess`; use the exported role
+   description/tags and a maximum session of one hour.
+4. On that role, create inline policy `bootstrap-resources` from the exported
+   write JSON. Root owns these access controls; the scoped role cannot change them.
+5. Sign back in as the IAM user. Configure profile `commerce-bootstrap` with
+   `role_arn=arn:aws:iam::ACCOUNT:role/commerce-aws-bootstrap`,
+   `source_profile=commerce-learning`, `mfa_serial=YOUR_MFA_DEVICE_ARN`,
+   `duration_seconds=3600` and `region=ap-south-1`. In your own terminal, run
+   `aws sts get-caller-identity --profile commerce-bootstrap` and enter the MFA code
+   there. Never paste a code or exported credentials into chat.
+6. For Terraform, use a separate `commerce-bootstrap-tf` process-credentials profile:
+   `credential_process = /ABSOLUTE/PATH/TO/aws configure export-credentials --profile commerce-bootstrap --format process`.
+   The CLI retrieves the cached role session for the SDK without printing secrets
+   into a shell log. Authenticate the CLI interactively first; an expired role
+   session needs a fresh MFA login. Do not run the export command directly in chat.
+
+With `AWS_PROFILE=commerce-bootstrap-tf`, import the four pre-created objects:
+
+```bash
+# Pass your private bootstrap -var-file to each import command if it isn't terraform.tfvars.
+terraform -chdir=infrastructure/bootstrap import 'aws_iam_policy.publisher_boundary[0]' \
+  'arn:aws:iam::ACCOUNT:policy/commerce-aws-publisher-boundary'
+terraform -chdir=infrastructure/bootstrap import 'aws_iam_role.bootstrap[0]' commerce-aws-bootstrap
+terraform -chdir=infrastructure/bootstrap import 'aws_iam_role_policy_attachment.bootstrap_read[0]' \
+  'commerce-aws-bootstrap/arn:aws:iam::aws:policy/ReadOnlyAccess'
+terraform -chdir=infrastructure/bootstrap import 'aws_iam_role_policy.bootstrap_write[0]' \
+  'commerce-aws-bootstrap:bootstrap-resources'
+```
+
+Re-plan after import. Stop if Terraform proposes modifying the protected access
+objects: root must reconcile the reviewed JSON, descriptions and tags first.
+Only the expected foundation creations should remain. Keep this role restricted
+to foundation maintenance; separate reviewed OIDC roles will provision the session.
+Authentication/MFA and real IAM sufficiency must be checked in AWS before apply;
+mocked policy tests cannot establish live permission behaviour.
+
+Primary access references: [custom role creation](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-custom.html),
+[same-account trusted principals](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html),
+[role profiles](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-role.html),
+[Free Tier upgrade and Organizations rules](https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/free-tier-FAQ.html).
 
 Copy the bootstrap example, edit its account/region/email/bucket, and reuse any
 existing GitHub OIDC provider in this account. The local file is gitignored.
