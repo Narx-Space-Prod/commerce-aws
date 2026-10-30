@@ -270,12 +270,15 @@ Repository variables:
 
 Secrets:
 
-* `RELEASE_APP_PRIVATE_KEY`: enter directly in GitHub Secrets. The App is installed
+* `RELEASE_APP_PRIVATE_KEY`: enter directly in the **release-proposal environment's
+  Secrets**, not repository-wide secrets. Main-only environment protection prevents
+  a developer's same-repository PR workflow from accessing the signing key. The App is installed
   only on this repository, with Contents read/write, Pull requests read/write,
   Metadata read. No Actions write, Administration, or bypass permission is needed.
   App-authored PRs trigger checks; PRs written with the ordinary `GITHUB_TOKEN`
   would not automatically trigger these workflows.
-* `SESSION_TFVARS_JSON`: JSON containing the variables in
+* `SESSION_TFVARS_JSON`: an **infrastructure-plan environment secret** containing
+  JSON with the variables in
   `infrastructure/session/session.example.tfvars`. Match the account/region and
   replace the documentation-only IP with your current public `/32` address.
 

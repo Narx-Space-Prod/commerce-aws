@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import tempfile
+import urllib.request
 from pathlib import Path
 
 import yaml
@@ -38,10 +39,28 @@ with tempfile.TemporaryDirectory() as directory:
     assert {obj['kind'] for obj in objects} >= {'Ingress', 'NetworkPolicy', 'ExternalSecret', 'ServiceMonitor', 'HorizontalPodAutoscaler'}
     manifest = Path(directory) / 'rendered.yaml'
     manifest.write_text(rendered)
+    # Cache each pinned schema once, with a bounded HTTP timeout. Do not let every
+    # resource independently fetch the same schema through an unbounded client.
+    schemas = Path('.work/schemas')
+    schemas.mkdir(parents=True, exist_ok=True)
+    custom = {'SecretStore', 'ExternalSecret', 'ServiceMonitor', 'PrometheusRule'}
+    for obj in objects + [item for item in yaml.safe_load_all(actual) if item]:
+        if obj['kind'] in custom:
+            continue
+        parts = obj['apiVersion'].split('/')
+        suffix = '-'.join([parts[0].split('.')[0], parts[1]]) if len(parts) == 2 else parts[0]
+        filename = obj['kind'].lower() + '-' + suffix + '.json'
+        path = schemas / filename
+        if not path.exists():
+            url = 'https://raw.githubusercontent.com/yannh/kubernetes-json-schema/b2ba4defe30ed5a0104987433896f1fd32807304/v1.35.0-standalone-strict/' + filename
+            with urllib.request.urlopen(url, timeout=15) as source:
+                schema = source.read()
+            json.loads(schema)  # A failed/truncated download must not enter the cache.
+            path.write_bytes(schema)
     # All standard Kubernetes objects are checked strictly. Operator CRDs are checked by
     # rendering/structural assertions here; live CRD admission is part of AWS activation.
     run('kubeconform', '-strict', '-summary', '-kubernetes-version', '1.35.0',
-        '-schema-location', 'https://raw.githubusercontent.com/yannh/kubernetes-json-schema/b2ba4defe30ed5a0104987433896f1fd32807304/{{.NormalizedKubernetesVersion}}-standalone-strict/{{.ResourceKind}}{{.KindSuffix}}.json',
+        '-schema-location', str(schemas / '{{.ResourceKind}}{{.KindSuffix}}.json'),
         '-skip', 'SecretStore,ExternalSecret,ServiceMonitor,PrometheusRule', str(manifest), str(actual_path))
     missing = subprocess.run(['helm', 'template', 'commerce', 'deploy/chart', '--set', 'enabled=true'], capture_output=True)
     assert missing.returncode != 0, 'Missing release was incorrectly accepted'

@@ -38,4 +38,14 @@ spec:
           for: 5m
           labels: {severity: warning, project: commerce-aws}
           annotations: {summary: 'Commerce API error rate exceeds 5% with at least 20 requests'}
+        - alert: CommerceOutboxStalled
+          expr: commerce_outbox_oldest_seconds{namespace="commerce"} > 300
+          for: 2m
+          labels: {severity: critical, project: commerce-aws}
+          annotations: {summary: 'An order event has not reached SQS for more than five minutes'}
+        - alert: CommerceQueuePollingFailures
+          expr: sum(increase(commerce_queue_poll_total{namespace="commerce",result="failed"}[5m])) > 5
+          for: 2m
+          labels: {severity: warning, project: commerce-aws}
+          annotations: {summary: 'Receipt worker repeatedly fails to poll SQS'}
 {{- end }}
