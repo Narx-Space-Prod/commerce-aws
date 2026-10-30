@@ -321,6 +321,16 @@ exception to infrastructure ownership. No `AdministratorAccess` policy is used.
    into a shell log. Authenticate the CLI interactively first; an expired role
    session needs a fresh MFA login. Do not run the export command directly in chat.
 
+For a brand-new account, the S3 backend bucket does not exist yet. Temporarily move
+the backend declaration aside and initialize local state before the imports. Restore
+it after the first foundation apply, then migrate the state as described below.
+
+```bash
+mkdir -p .work
+mv infrastructure/bootstrap/backend.tf .work/bootstrap-backend.tf
+terraform -chdir=infrastructure/bootstrap init
+```
+
 With `AWS_PROFILE=commerce-bootstrap-tf`, import the four pre-created objects:
 
 ```bash
@@ -351,18 +361,25 @@ existing GitHub OIDC provider in this account. The local file is gitignored.
 
 ```bash
 cp infrastructure/bootstrap/bootstrap.example.tfvars infrastructure/bootstrap/terraform.tfvars
-terraform -chdir=infrastructure/bootstrap init
 terraform -chdir=infrastructure/bootstrap plan -out=bootstrap.tfplan
 terraform -chdir=infrastructure/bootstrap apply bootstrap.tfplan
 terraform -chdir=infrastructure/bootstrap output
 ```
 
-The bootstrap root starts with **local sensitive state**. Migrate it to the new
-bucket before continuing: add `backend "s3" {}` inside its existing `terraform`
-block and run `terraform init -migrate-state` with bucket/region/key settings, using
-`key=bootstrap/terraform.tfstate`, `encrypt=true` and `use_lockfile=true`. Review and
-commit the backend declaration without hardcoding account secrets. Keep an encrypted
-backup until migration is verified, then remove local state copies securely.
+The bootstrap root starts with **local sensitive state**. Restore the reviewed
+backend declaration moved aside above, then migrate state to the new bucket:
+
+```bash
+mv .work/bootstrap-backend.tf infrastructure/bootstrap/backend.tf
+terraform -chdir=infrastructure/bootstrap init -migrate-state \
+  -backend-config='bucket=YOUR_STATE_BUCKET' \
+  -backend-config='key=bootstrap/terraform.tfstate' \
+  -backend-config='region=ap-south-1' \
+  -backend-config='encrypt=true' -backend-config='use_lockfile=true'
+```
+
+Keep an encrypted backup until migration is verified, then remove local state copies
+securely. Backend details are supplied at initialization; do not commit credentials.
 This one-time migration is deliberate; Terraform cannot create its own backend
 before that bucket exists. Do not repeatedly create new state buckets.
 
