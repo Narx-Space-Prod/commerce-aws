@@ -703,7 +703,12 @@ terraform -chdir=infrastructure/session apply destroy.tfplan
 
 Alternatively dispatch the infrastructure workflow with operation `destroy` and
 confirmation `destroy commerce-aws`, inspect the saved destroy plan and approve it.
-Run Kubernetes cleanup first. Removing EKS before the ALB controller processes its
+Run Kubernetes cleanup first. Immediately before a workflow destroy, the apply job
+also refuses to proceed if any load balancer remains in the session VPC or any
+project-tagged CSI volume remains. The apply role needs read access to those AWS
+APIs. This guard cannot identify untagged orphaned volumes, and local Terraform
+commands do not run it; always perform the inventory and billing review below.
+Removing EKS before the ALB controller processes its
 Ingress finalizer can leave billable load balancers and network interfaces behind.
 Deleting Helm releases does not reliably delete their retained PVCs; the helper
 explicitly deletes monitoring PVCs while the EBS driver still exists.
