@@ -1,0 +1,104 @@
+name: AWS infrastructure
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Session operation (bootstrap is managed separately)
+        type: choice
+        options: [apply, destroy]
+        default: apply
+      confirmation:
+        description: 'For destroy, type: destroy commerce-aws'
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: aws-session-infrastructure
+  cancel-in-progress: false
+env:
+  TF_IN_AUTOMATION: 'true'
+  TF_INPUT: 'false'
+jobs:
+  plan:
+    if: github.ref == 'refs/heads/main' && vars.INFRA_ENABLED == 'true'
+    name: Plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: infrastructure-plan
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      checksum: ${{ steps.plan.outputs.checksum }}
+      key: ${{ steps.plan.outputs.key }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with: {terraform_version: 1.16.0, terraform_wrapper: false}
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-duration-seconds: 1800
+      - name: Create saved plan in encrypted private S3, never a public build artifact
+        id: plan
+        env:
+          BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          REGION: ${{ vars.AWS_REGION }}
+          VARIABLES: ${{ secrets.SESSION_TFVARS_JSON }}
+          OPERATION: ${{ inputs.operation }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          umask 077
+          trap 'rm -f infrastructure/session/session.auto.tfvars.json "$RUNNER_TEMP/session.tfplan"' EXIT
+          if [ "$OPERATION" = destroy ]; then test "$CONFIRMATION" = 'destroy commerce-aws'; fi
+          printf '%s' "$VARIABLES" > infrastructure/session/session.auto.tfvars.json
+          terraform -chdir=infrastructure/session init -input=false -backend-config="bucket=$BUCKET" -backend-config="key=session/terraform.tfstate" -backend-config="region=$REGION" -backend-config=encrypt=true -backend-config=use_lockfile=true
+          args=()
+          if [ "$OPERATION" = destroy ]; then args+=(-destroy); fi
+          terraform -chdir=infrastructure/session plan -lock-timeout=5m -out="$RUNNER_TEMP/session.tfplan" "${args[@]}"
+          checksum=$(sha256sum "$RUNNER_TEMP/session.tfplan" | cut -d' ' -f1)
+          version=$(aws s3api put-object --bucket "$BUCKET" --key "plans/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT.tfplan" --body "$RUNNER_TEMP/session.tfplan" --server-side-encryption AES256 --query VersionId --output text)
+          test "$version" != None
+          printf 'checksum=%s\nversion=%s\n' "$checksum" "$version" >> "$GITHUB_OUTPUT"
+          printf 'key=plans/%s/%s.tfplan\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          printf 'Review the Terraform plan in this job before approving Apply. Source: `%s`. Operation: `%s`.\n' "$GITHUB_SHA" "$OPERATION" >> "$GITHUB_STEP_SUMMARY"
+  apply:
+    name: Apply reviewed saved plan
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: infrastructure-apply
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with: {terraform_version: 1.16.0, terraform_wrapper: false}
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-duration-seconds: 3600
+      - name: Apply exactly the reviewed version and checksum
+        env:
+          BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          REGION: ${{ vars.AWS_REGION }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          CHECKSUM: ${{ needs.plan.outputs.checksum }}
+          KEY: ${{ needs.plan.outputs.key }}
+        run: |
+          set -euo pipefail
+          umask 077
+          trap 'rm -f "$RUNNER_TEMP/session.tfplan"' EXIT
+          terraform -chdir=infrastructure/session init -input=false -backend-config="bucket=$BUCKET" -backend-config="key=session/terraform.tfstate" -backend-config="region=$REGION" -backend-config=encrypt=true -backend-config=use_lockfile=true
+          aws s3api get-object --bucket "$BUCKET" --key "$KEY" --version-id "$VERSION" "$RUNNER_TEMP/session.tfplan" > /dev/null
+          printf '%s  %s\n' "$CHECKSUM" "$RUNNER_TEMP/session.tfplan" | sha256sum --check --strict
+          terraform -chdir=infrastructure/session apply -lock-timeout=5m "$RUNNER_TEMP/session.tfplan"

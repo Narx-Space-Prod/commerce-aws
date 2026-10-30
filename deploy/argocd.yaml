@@ -1,0 +1,27 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata: {name: commerce, namespace: argocd}
+spec:
+  sourceRepos: [https://github.com/Narx-Space-Prod/commerce-aws.git]
+  destinations: [{server: 'https://kubernetes.default.svc', namespace: commerce}]
+  namespaceResourceWhitelist: [{group: '*', kind: '*'}]
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata: {name: commerce, namespace: argocd}
+spec:
+  project: commerce
+  source:
+    repoURL: https://github.com/Narx-Space-Prod/commerce-aws.git
+    targetRevision: main
+    path: deploy/chart
+    helm:
+      valueFiles: [../environment.yaml, ../release.json]
+  destination: {server: 'https://kubernetes.default.svc', namespace: commerce}
+  ignoreDifferences:
+    - {group: apps, kind: Deployment, name: commerce-frontend, jsonPointers: [/spec/replicas]}
+    - {group: apps, kind: Deployment, name: commerce-catalogue, jsonPointers: [/spec/replicas]}
+  syncPolicy:
+    automated: {prune: true, selfHeal: true, allowEmpty: false}
+    syncOptions: [ServerSideApply=true, PruneLast=true, RespectIgnoreDifferences=true]
+    retry: {limit: 3, backoff: {duration: 10s, factor: 2, maxDuration: 1m}}

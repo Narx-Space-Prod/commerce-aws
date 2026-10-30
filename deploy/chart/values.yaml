@@ -1,0 +1,73 @@
+# No workloads are started until AWS settings and a reviewed release are present.
+enabled: false
+region: ap-south-1
+publicOrigin: https://shop.example.com
+runtimeSecretArn: ""
+databaseSecretArn: ""
+ingress:
+  enabled: false
+  host: shop.example.com
+  certificateArn: ""
+release:
+  source: ""
+  images: {}
+services:
+  frontend:
+    port: 8080
+    image: frontend
+    replicas: 1
+    readiness: /health/ready
+    liveness: /health/live
+    metrics: /metrics
+    resources: {requests: {cpu: 50m, memory: 64Mi}, limits: {cpu: 500m, memory: 128Mi}}
+    env: {CATALOGUE_URL: "http://commerce-catalogue", CART_URL: "http://commerce-cart", ORDERS_URL: "http://commerce-orders", COOKIE_SECURE: "true"}
+  catalogue:
+    port: 8081
+    image: catalogue
+    replicas: 1
+    readiness: /health/ready
+    liveness: /health/live
+    metrics: /metrics
+    resources: {requests: {cpu: 25m, memory: 32Mi}, limits: {cpu: 250m, memory: 64Mi}}
+    env: {COMMERCE_URL: "http://commerce-orders"}
+  cart:
+    port: 8082
+    image: cart
+    replicas: 1
+    readiness: /health/ready
+    liveness: /health/live
+    metrics: /metrics
+    resources: {requests: {cpu: 25m, memory: 64Mi}, limits: {cpu: 250m, memory: 128Mi}}
+    env: {}
+  orders:
+    port: 8083
+    image: orders
+    replicas: 1
+    readiness: /actuator/health/readiness
+    liveness: /actuator/health/liveness
+    metrics: /actuator/prometheus
+    resources: {requests: {cpu: 100m, memory: 320Mi}, limits: {cpu: 1000m, memory: 512Mi}}
+    env: {CART_URL: "http://commerce-cart", SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "4"}
+  publisher:
+    port: 8083
+    image: orders
+    replicas: 1
+    readiness: /actuator/health/readiness
+    liveness: /actuator/health/liveness
+    metrics: /actuator/prometheus
+    resources: {requests: {cpu: 50m, memory: 192Mi}, limits: {cpu: 500m, memory: 320Mi}}
+    env: {DELIVERY_ROLE: publisher, DELIVERY_LOCAL: "false", SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "2"}
+  worker:
+    port: 8083
+    image: orders
+    replicas: 1
+    readiness: /actuator/health/readiness
+    liveness: /actuator/health/liveness
+    metrics: /actuator/prometheus
+    resources: {requests: {cpu: 50m, memory: 192Mi}, limits: {cpu: 500m, memory: 320Mi}}
+    env: {DELIVERY_ROLE: worker, DELIVERY_LOCAL: "false", SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "2"}
+autoscaling:
+  enabled: true
+  maxReplicas: 2
+redis:
+  image: redis:7.4-alpine@sha256:892022f9f18c26c92c30e15194d132f90044af87b94a491a75429bbc3982eab1

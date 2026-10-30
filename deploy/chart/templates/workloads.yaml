@@ -1,0 +1,99 @@
+{{- if .Values.enabled }}
+{{- $root := . }}
+{{- range $name, $service := .Values.services }}
+{{- $image := required (printf "release image missing: %s" $service.image) (index $root.Values.release.images $service.image) }}
+{{- if not (regexMatch "^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/commerce-aws/[a-z]+@sha256:[a-f0-9]{64}$" $image) }}
+{{- fail "Use a private ECR image with a sha256 digest, never a mutable tag" }}
+{{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: commerce-{{ $name }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: commerce-{{ $name }}
+  labels: {app: commerce, component: {{ $name }}}
+spec:
+  selector: {app: commerce, component: {{ $name }}}
+  ports: [{name: http, port: 80, targetPort: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: commerce-{{ $name }}
+  labels: {app: commerce, component: {{ $name }}}
+spec:
+  {{- if not (and $root.Values.autoscaling.enabled (has $name (list "frontend" "catalogue"))) }}
+  replicas: {{ $service.replicas }}
+  {{- end }}
+  revisionHistoryLimit: 3
+  progressDeadlineSeconds: 300
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  selector:
+    matchLabels: {app: commerce, component: {{ $name }}}
+  template:
+    metadata:
+      labels: {app: commerce, component: {{ $name }}}
+    spec:
+      serviceAccountName: commerce-{{ $name }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: app
+          image: {{ $image | quote }}
+          ports: [{name: http, containerPort: {{ $service.port }}}]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          env:
+            - {name: AWS_REGION, value: {{ $root.Values.region | quote }}}
+            {{- range $key, $value := $service.env }}
+            - {name: {{ $key }}, value: {{ $value | quote }}}
+            {{- end }}
+            {{- if eq $name "frontend" }}
+            - {name: PUBLIC_ORIGIN, value: {{ $root.Values.publicOrigin | quote }}}
+            - {name: SESSION_SECRET, valueFrom: {secretKeyRef: {name: commerce-runtime, key: SESSION_SECRET}}}
+            {{- else if eq $name "cart" }}
+            - {name: REDIS_URL, valueFrom: {secretKeyRef: {name: commerce-runtime, key: REDIS_URL}}}
+            {{- else if has $name (list "orders" "publisher" "worker") }}
+            {{- range $key := list "DATABASE_URL" "DATABASE_USER" "DATABASE_PASSWORD" }}
+            - {name: {{ $key }}, valueFrom: {secretKeyRef: {name: commerce-runtime, key: {{ $key }}}}}
+            {{- end }}
+            {{- if ne $name "orders" }}
+            - {name: DELIVERY_QUEUE_URL, valueFrom: {secretKeyRef: {name: commerce-runtime, key: DELIVERY_QUEUE_URL}}}
+            {{- end }}
+            {{- if eq $name "orders" }}
+            {{- range $key := list "RAZORPAY_KEY_ID" "RAZORPAY_KEY_SECRET" "RAZORPAY_WEBHOOK_SECRET" }}
+            - {name: {{ $key }}, valueFrom: {secretKeyRef: {name: commerce-payments, key: {{ $key }}, optional: true}}}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+          startupProbe: {httpGet: {path: {{ $service.liveness }}, port: http}, failureThreshold: 90, periodSeconds: 2}
+          readinessProbe: {httpGet: {path: {{ $service.readiness }}, port: http}, periodSeconds: 5}
+          livenessProbe: {httpGet: {path: {{ $service.liveness }}, port: http}, periodSeconds: 10}
+          resources:
+            {{- toYaml $service.resources | nindent 12 }}
+          volumeMounts: [{name: temporary, mountPath: /tmp}]
+      volumes: [{name: temporary, emptyDir: {sizeLimit: 128Mi}}]
+{{- if and $root.Values.autoscaling.enabled (has $name (list "frontend" "catalogue")) }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: commerce-{{ $name }}}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: commerce-{{ $name }}}
+  minReplicas: 1
+  maxReplicas: {{ $root.Values.autoscaling.maxReplicas }}
+  behavior:
+    scaleDown: {stabilizationWindowSeconds: 300}
+  metrics:
+    - type: Resource
+      resource: {name: cpu, target: {type: Utilization, averageUtilization: 70}}
+{{- end }}
+{{- end }}
+{{- end }}

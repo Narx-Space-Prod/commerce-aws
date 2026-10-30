@@ -1,0 +1,9 @@
+enabled: true
+region: ap-south-1
+publicOrigin: https://shop.example.com
+runtimeSecretArn: arn:aws:secretsmanager:ap-south-1:123456789012:secret:replace-runtime
+databaseSecretArn: arn:aws:secretsmanager:ap-south-1:123456789012:secret:replace-rds-master
+ingress:
+  enabled: true
+  host: shop.example.com
+  certificateArn: arn:aws:acm:ap-south-1:123456789012:certificate/replace-with-issued-certificate

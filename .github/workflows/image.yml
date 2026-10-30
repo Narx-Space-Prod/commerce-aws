@@ -1,0 +1,131 @@
+name: Tested image
+on:
+  workflow_call:
+    inputs:
+      component: {required: true, type: string}
+      context: {required: true, type: string}
+permissions:
+  contents: read
+jobs:
+  build:
+    name: Build, test and scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      COMPONENT: ${{ inputs.component }}
+      CONTEXT: ${{ inputs.context }}
+      IMAGE: commerce-check/${{ inputs.component }}:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - name: Check build context
+        run: |
+          python3 - <<'PY'
+          import os, sys
+          sys.path.insert(0, 'scripts')
+          from changes import COMPONENTS
+          assert COMPONENTS.get(os.environ['COMPONENT']) == os.environ['CONTEXT']
+          PY
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ inputs.context }}
+          target: runtime
+          load: true
+          tags: ${{ env.IMAGE }}
+          cache-from: type=gha,scope=${{ inputs.component }}
+          cache-to: type=gha,scope=${{ inputs.component }},mode=max
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+      - name: Verify runtime and scan
+        run: |
+          user=$(docker inspect "$IMAGE" --format '{{.Config.User}}')
+          case "$user" in ''|root|root:*|0|0:*) exit 1 ;; esac
+          bash scripts/tools.sh trivy
+          export PATH="$RUNNER_TEMP/bin:$PATH"
+          mkdir -p evidence
+          : > "$RUNNER_TEMP/no-vulnerability-exceptions"
+          trivy image --config /dev/null --ignorefile "$RUNNER_TEMP/no-vulnerability-exceptions" --scanners vuln --format json --output evidence/vulnerabilities.json "$IMAGE"
+          trivy convert --format cyclonedx --output evidence/sbom.cdx.json evidence/vulnerabilities.json
+          trivy convert --format table --severity HIGH,CRITICAL --exit-code 1 evidence/vulnerabilities.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with: {name: 'security-${{ inputs.component }}', path: evidence/, retention-days: 7}
+      - name: Save exact tested image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DELIVERY_ENABLED == 'true'
+        run: docker save "$IMAGE" --output "$RUNNER_TEMP/runtime.tar"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DELIVERY_ENABLED == 'true'
+        with: {name: 'runtime-${{ inputs.component }}', path: '${{ runner.temp }}/runtime.tar', retention-days: 1, compression-level: 0}
+
+  publish:
+    name: Publish exact tested image
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DELIVERY_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: registry-release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      COMPONENT: ${{ inputs.component }}
+      ACCOUNT: ${{ vars.AWS_ACCOUNT_ID }}
+      REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: {name: 'runtime-${{ inputs.component }}', path: runtime}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: {name: 'security-${{ inputs.component }}', path: evidence}
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_RELEASE_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-duration-seconds: 900
+      - uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+      - name: Publish immutable source tag
+        run: |
+          [[ "$COMPONENT" =~ ^(frontend|catalogue|orders|cart)$ ]]
+          [[ "$ACCOUNT" =~ ^[0-9]{12}$ ]]
+          [[ "$REGION" =~ ^[a-z]{2}-[a-z]+-[0-9]+$ ]]
+          docker load --input runtime/runtime.tar
+          image="$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/commerce-aws/$COMPONENT"
+          docker tag "commerce-check/$COMPONENT:$GITHUB_SHA" "$image:$GITHUB_SHA"
+          aws ecr batch-get-image --repository-name "commerce-aws/$COMPONENT" --image-ids "imageTag=$GITHUB_SHA" > existing.json
+          export LOCAL_ID
+          LOCAL_ID=$(docker inspect "commerce-check/$COMPONENT:$GITHUB_SHA" --format '{{.Id}}')
+          digest=$(python3 - <<'PY'
+          import json, os
+          result = json.load(open('existing.json'))
+          if result.get('images'):
+              entry = result['images'][0]
+              if json.loads(entry['imageManifest'])['config']['digest'] != os.environ['LOCAL_ID']:
+                  raise SystemExit('Immutable source tag contains a different image; use a new reviewed source commit')
+              print(entry['imageId']['imageDigest'])
+          elif any(x.get('failureCode') != 'ImageNotFound' for x in result.get('failures', [])):
+              raise SystemExit('Registry lookup failed')
+          PY
+          )
+          if [ -z "$digest" ]; then
+            docker push "$image:$GITHUB_SHA"
+            digest=$(aws ecr describe-images --repository-name "commerce-aws/$COMPONENT" --image-ids "imageTag=$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text)
+          fi
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          printf 'REFERENCE=%s@%s\n' "$image" "$digest" >> "$GITHUB_ENV"
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with: {cosign-release: v3.1.4}
+      - name: Sign image and attest SBOM
+        run: |
+          cosign sign --yes "$REFERENCE"
+          cosign attest --yes --type cyclonedx --predicate evidence/sbom.cdx.json "$REFERENCE"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          c = os.environ['COMPONENT']
+          Path(f'release-{c}.json').write_text(json.dumps({'component': c, 'image': os.environ['REFERENCE'], 'source': os.environ['GITHUB_SHA']}) + '\n')
+          PY
+          printf 'Published and signed `%s`\n' "$REFERENCE" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with: {name: 'release-${{ inputs.component }}', path: 'release-${{ inputs.component }}.json', retention-days: 7}

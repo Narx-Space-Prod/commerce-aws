@@ -1,0 +1,4 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';import {route,observe,exposition} from '../src/metrics.js';
+test('request identifiers never become metric labels',()=>{assert.equal(route('/api/orders/123-456'),'/api/orders/:id');assert.equal(route('/app.0123456789abcdef.js'),'/app.js');assert.equal(route('/style.abcdef0123456789.css'),'/style.css');assert.equal(route('/anything-unbounded'),'unmatched');observe('GET','/api/orders/random',200,0.12);const m=exposition();assert.match(m,/route="\/api\/orders\/:id"/);assert.match(m,/le="0.25"} 1/);assert.doesNotMatch(m,/random/);});
+
+test("account and order pages keep bounded route labels",()=>{assert.equal(route("/orders/some-id"),"/orders/:id");assert.equal(route("/api/auth/login"),"/api/auth/login");assert.equal(route("/orders"),"/orders");});

@@ -1,0 +1,3 @@
+- `frontend`: https://github.com/Narx-Space-Prod/commerce-frontend/tree/40da9fc2cb41b975d02d486c9695643cdfaec830
+- `catalogue`: https://github.com/Narx-Space-Prod/commerce-catalogue/tree/3037f94a2864234e8dc32cd89d350303582a350d
+- `orders`: https://github.com/Narx-Space-Prod/commerce-orders/tree/a7d93fb5685b398839bbdba214e8de0bff054088

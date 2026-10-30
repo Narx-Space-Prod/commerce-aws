@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#e5e7eb">
+  <title>Shipyard Boutique</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header>
+    <a href="/" class="brand" aria-label="Shipyard home">◈ SHIPYARD</a>
+    <nav aria-label="Main navigation">
+      <a href="/">Shop</a>
+      <a href="/orders">My orders</a>
+      <a href="/admin" id="admin-link" hidden>Admin</a>
+      <a href="/account" id="account-link">Sign in</a>
+      <button id="cart-toggle" class="secondary">Bag <b id="count">0</b></button>
+    </nav>
+  </header>
+  <main id="main" tabindex="-1">
+    <p id="status" class="notice" role="status" aria-live="polite"></p>
+    <section id="shop-page" hidden>
+      <div class="hero">
+        <p class="eyebrow">EVERYDAY ESSENTIALS, THOUGHTFULLY CHOSEN</p>
+        <h1>Good things.<br>For your everyday.</h1>
+        <p>A small collection for your desk, your downtime and everything you’re building next.</p>
+        <a class="text-link" href="#products">Find your next favourite ↓</a>
+      </div>
+      <div class="section-heading"><h2>The collection</h2><span>Four favourites. Zero clutter.</span></div>
+      <section id="products" aria-label="Products"></section>
+      <div class="store-notes"><p>◈ A considered collection</p><p>↗ Your orders, all in one place</p><p>♡ Made for the everyday</p></div>
+    </section>
+    <section id="account-page" class="page narrow" hidden>
+      <p class="eyebrow">YOUR SHIPYARD</p><h1 id="account-title">Welcome back.</h1>
+      <div id="profile" class="surface" hidden>
+        <h2 id="profile-name"></h2><p id="profile-email"></p>
+        <p>Your account keeps your orders together, even when you sign in on another browser.</p>
+        <a href="/orders" class="button-link">View my orders</a>
+        <button id="logout" class="secondary">Sign out</button>
+      </div>
+      <div id="auth-panel" class="surface">
+        <div class="tabs" role="group" aria-label="Choose account action">
+          <button id="login-tab" type="button" aria-pressed="true">Sign in</button>
+          <button id="register-tab" type="button" class="secondary" aria-pressed="false">Create account</button>
+        </div>
+        <form id="auth-form">
+          <label id="name-field" hidden>Your name<input id="auth-name" name="name" autocomplete="name" maxlength="80"></label>
+          <label>Email address<input id="auth-email" name="email" type="email" autocomplete="username" maxlength="254" required></label>
+          <label>Password<input id="auth-password" name="password" type="password" autocomplete="current-password" maxlength="128" required></label>
+          <p id="password-help" class="muted" hidden>Use a passphrase of 15–128 characters. Spaces are welcome.</p>
+          <p id="auth-error" class="form-error" role="alert"></p>
+          <button id="auth-submit" type="submit">Sign in</button>
+        </form>
+        <p class="muted">Demo boutique. Email verification and password recovery are not available yet. Use a unique demo password.</p>
+      </div>
+    </section>
+    <section id="orders-page" class="page" hidden>
+      <p class="eyebrow">YOUR SHIPYARD</p><h1>My orders.</h1>
+      <p id="orders-intro" class="muted"></p>
+      <div id="order-list" aria-live="polite"></div>
+      <div id="pagination" class="actions" hidden>
+        <button id="previous-orders" class="secondary">Previous</button>
+        <span id="page-number"></span><button id="next-orders" class="secondary">Next</button>
+      </div>
+    </section>
+    <section id="order-page" class="page" hidden>
+      <a class="text-link" href="/orders">← All orders</a>
+      <div id="order-detail" aria-live="polite"></div>
+    </section>
+    <section id="admin-page" class="page" hidden>
+      <p class="eyebrow">STORE OPERATIONS</p><h1>The control room.</h1>
+      <p id="admin-error" class="form-error" role="alert"></p>
+      <div id="admin-content" hidden>
+        <nav id="admin-tabs" class="tabs" aria-label="Admin sections">
+          <button data-admin="dashboard">Overview</button><button data-admin="products" class="secondary">Products</button>
+          <button data-admin="orders" class="secondary">Orders &amp; refunds</button><button data-admin="audit" class="secondary">Activity</button>
+        </nav>
+        <div id="admin-view" aria-live="polite"></div>
+      </div>
+    </section>
+    <section id="checkout-page" class="page" hidden>
+      <p class="eyebrow">ONE LAST THING</p><h1>Make it yours.</h1>
+      <div id="checkout-signin" class="surface" hidden>
+        <h2>Sign in to place your order</h2><p>Keep your order history safe in your account.</p>
+        <a href="/account?next=checkout" class="button-link">Sign in or create an account</a>
+      </div>
+      <div id="checkout-content" class="checkout-grid" hidden>
+        <form id="checkout-form" class="surface">
+          <h2>Delivery details</h2><p class="muted">Razorpay test mode: no real money is charged. Use sample address details.</p>
+          <label>Full name<input name="name" id="delivery-name" autocomplete="name" maxlength="80" required></label>
+          <label>Street address<input name="address" autocomplete="street-address" maxlength="200" required></label>
+          <div class="form-row"><label>City<input name="city" autocomplete="address-level2" maxlength="100" required></label>
+            <label>Postal code<input name="postalCode" autocomplete="postal-code" maxlength="30" required></label></div>
+          <label>Country<input name="country" autocomplete="country-name" maxlength="80" required></label>
+          <p id="checkout-error" class="form-error" role="alert"></p>
+          <button type="submit" id="place-order">Continue to payment</button>
+        </form>
+        <aside id="checkout-summary" class="surface" aria-label="Order summary"></aside>
+      </div>
+    </section>
+  </main>
+  <dialog id="product-editor" aria-labelledby="editor-title">
+    <div class="section-heading"><h2 id="editor-title">Product details</h2><button id="close-editor" class="secondary" type="button">Close</button></div>
+    <form id="product-form">
+      <label>Product ID<input name="id" pattern="[a-z0-9-]{1,64}" maxlength="64" required></label>
+      <label>Name<input name="name" maxlength="120" required></label>
+      <label>Description<input name="description" maxlength="1000"></label>
+      <label>Emoji<input name="emoji" maxlength="16" required></label>
+      <label>Price (rupees)<input name="price" type="number" min="0.01" max="1000000" step="0.01" required></label>
+      <label>Stock available<input name="stock" type="number" min="0" max="1000000" step="1" required></label>
+      <label class="checkbox-label"><input name="active" type="checkbox"> Visible in store</label>
+      <input name="version" type="hidden">
+      <p id="product-error" class="form-error" role="alert"></p><button id="save-product" type="submit">Save product</button>
+    </form>
+  </dialog>
+  <dialog id="cart-panel" aria-labelledby="cart-title">
+    <div class="section-heading"><h2 id="cart-title">Your bag</h2><button id="close-cart" class="secondary" aria-label="Close bag">✕</button></div>
+    <p id="checkout-status" role="status" aria-live="polite"></p>
+    <div id="cart-items"></div><p id="total" class="cart-total"></p>
+    <button id="checkout">Continue to checkout</button>
+    <p class="muted">Test store. Payments run in Razorpay test mode.</p>
+  </dialog>
+  <footer><a href="/" class="brand">◈ SHIPYARD</a><p>Small collection. Everyday favourites.</p><p>Test boutique · Razorpay sandbox · No real fulfilment</p></footer>
+</body>
+</html>

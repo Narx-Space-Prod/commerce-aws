@@ -1,0 +1,3 @@
+import {createHmac,randomBytes,timingSafeEqual} from 'node:crypto';
+export function session(cookie,secret){const raw=(cookie||'').split(';').map(x=>x.trim()).find(x=>x.startsWith('session='))?.slice(8);if(raw){const [id,sig]=raw.split('.');if(/^[a-f0-9]{64}$/.test(id||'')&&/^[a-f0-9]{64}$/.test(sig||'')){const expected=createHmac('sha256',secret).update(id).digest('hex');if(timingSafeEqual(Buffer.from(sig),Buffer.from(expected)))return {id,fresh:false};}}return {id:randomBytes(32).toString('hex'),fresh:true};}
+export function signedCookie(id,secret,secure){const sig=createHmac('sha256',secret).update(id).digest('hex');return `session=${id}.${sig}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800${secure?'; Secure':''}`;}

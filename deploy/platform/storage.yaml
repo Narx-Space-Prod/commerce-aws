@@ -1,0 +1,24 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata: {name: gp3}
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+parameters: {type: gp3, encrypted: 'true'}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: commerce
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.35
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata: {name: commerce, namespace: commerce}
+spec:
+  hard: {requests.cpu: '3', requests.memory: 4Gi, limits.cpu: '8', limits.memory: 6Gi, persistentvolumeclaims: '3', requests.storage: 10Gi, pods: '20'}
