@@ -31,11 +31,14 @@ CHECKS = {
     'retained_database_backups': ['rds', 'describe-db-instance-automated-backups', '--query', 'DBInstanceAutomatedBackups[].{id:DBInstanceIdentifier,status:Status,arn:DBInstanceAutomatedBackupsArn}'],
     'repositories': ['ecr', 'describe-repositories', '--query', 'repositories[].{arn:repositoryArn,name:repositoryName}'],
     'log_groups': ['logs', 'describe-log-groups', '--query', 'logGroups[].{name:logGroupName,bytes:storedBytes,retentionDays:retentionInDays}'],
+    'alarms': ['cloudwatch', 'describe-alarms', '--alarm-types', 'MetricAlarm', 'CompositeAlarm', '--query', '{metric:MetricAlarms[].{arn:AlarmArn,name:AlarmName,state:StateValue},composite:CompositeAlarms[].{arn:AlarmArn,name:AlarmName,state:StateValue}}'],
+    'certificates': ['acm', 'list-certificates', '--query', 'CertificateSummaryList[].{arn:CertificateArn,domain:DomainName,status:Status}'],
     'secret_metadata': ['secretsmanager', 'list-secrets', '--query', 'SecretList[].{arn:ARN,name:Name,deletedDate:DeletedDate,tags:Tags}'],
     'queues': ['sqs', 'list-queues', '--query', 'QueueUrls'],
     'kms_keys': ['kms', 'list-keys', '--query', 'Keys[].{id:KeyId,arn:KeyArn}'],
     'topics': ['sns', 'list-topics', '--query', 'Topics[].TopicArn'],
     'buckets_global': ['s3api', 'list-buckets', '--query', 'Buckets[].{name:Name,created:CreationDate}'],
+    'hosted_zones_global': ['route53', 'list-hosted-zones', '--query', 'HostedZones[].{id:Id,name:Name,private:Config.PrivateZone}'],
 }
 
 
@@ -69,7 +72,7 @@ def main():
         except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError) as failure:
             report['errors'][name] = type(failure).__name__
     report['complete'] = not report['errors']
-    report['limitations'] = ['Mumbai inventory plus global bucket names; other regions/services are not exhaustively covered.',
+    report['limitations'] = ['Mumbai inventory plus global bucket/hosted-zone names; other regions/services are not exhaustively covered.',
                              'A resource snapshot is not an AWS Billing audit. Review Billing separately.',
                              'Existing and untagged resources are intentionally included. Do not delete them automatically.']
     path = args.output or Path('.work/inventory') / (timestamp.strftime('%Y%m%dT%H%M%S%fZ') + '.json')

@@ -146,7 +146,7 @@ makes the report incomplete and exits nonzero; it does not mean resources are ab
 It never retrieves secret values, creates resources or deletes resources. Keep the
 baseline to distinguish this project from existing work; never delete unrelated
 resources simply because they appear in the report. It covers the main Mumbai
-services plus global S3 bucket names, not every AWS service/region or a billing audit.
+services plus global S3 bucket and Route 53 zone names, not every AWS service/region or a billing audit.
 
 Tagging is ownership evidence, not proof of zero charges. After teardown compare
 inventories, inspect service-owned remnants and retained resources, then review
