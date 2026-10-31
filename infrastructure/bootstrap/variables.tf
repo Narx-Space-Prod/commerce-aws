@@ -12,3 +12,14 @@ variable "state_bucket_name" {
     error_message = "Use 3–63 lowercase letters, digits and hyphens, beginning and ending with a letter or digit."
   }
 }
+
+variable "public_dns_zone_name" {
+  description = "The public domain owned by this project. The Route 53 zone is retained in bootstrap state."
+  type        = string
+  default     = "narx.space"
+
+  validation {
+    condition     = var.public_dns_zone_name == "narx.space"
+    error_message = "This bootstrap stack is authorized to manage only the narx.space public zone."
+  }
+}
