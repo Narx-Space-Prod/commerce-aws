@@ -4,20 +4,25 @@ This is one application in one AWS **learning** environment. It reuses the Comme
 app so that your work focuses on infrastructure and operations. It does not depend
 on your laptop Kubernetes cluster or the previous six-repository delivery system.
 
-**Status snapshot, 31 October 2026:** The temporary IAM setup role has been deleted.
-The retained foundation exists: the private
-state bucket, four ECR repositories with the first signed images, budget, GitHub OIDC provider, publisher
-and planning identities, and the MFA bootstrap identity. Their configuration is
-tracked in Terraform. The release App's authentication test passed. A read-only
-session plan was generated; **the EKS session, database, application and monitoring
-have not been deployed**. The apply identity and its six policies have been provisioned; actual AWS apply
-and destroy behaviour remain unverified.
-The AWS trusts were corrected to GitHub's immutable subject format, and the
-plan-only and protected identity verification workflows subsequently passed. The
-first image publication run 41198659786 passed; all four signatures and CycloneDX
-attestations were independently verified against the exact reusable `image.yml`
-identity on main. The merged release manifest records those digests. Actual session deployment
-and teardown remain unverified.
+**Status snapshot, 31 October 2026:** The retained foundation and first signed ECR
+release exist and are tracked in Terraform. The temporary IAM setup role was deleted.
+Protected infrastructure Apply run **41202931403** was approved by Code-S-12 and
+created an active EKS 1.35 control plane, an available private PostgreSQL database,
+and supporting resources. It then **failed before creating a worker**: the pipeline
+lacked Secrets Manager `GetResourcePolicy` and EC2 launch-template launch permissions.
+Terraform saved 54 managed instances, including a tainted runtime-secret resource
+whose post-create read failed. The secret has no application consumers yet.
+The source includes scoped permission fixes; an AWS account administrator must
+publish them to the existing pipeline IAM policies before a newly reviewed retry.
+Do not replay the old saved plan or claim the deployment succeeded.
+
+The Kubernetes API is reachable with the MFA operator role, but there are no workers,
+no Argo/platform installation and no application deployment yet. These AWS resources
+continue accruing charges while permission recovery is pending. First creation was
+partially exercised; complete creation, update and teardown are still unverified.
+GitHub OIDC protected planning/identity tests and release-App authentication passed.
+The four images from publication run 41198659786 have independently verified signatures
+and CycloneDX attestations, using the exact reusable `image.yml` identity on main.
 DNS/public HTTPS is deliberately deferred. No Route 53 zone, certificate or shop DNS
 record has been created for this project. Keep ingress disabled during initial
 private infrastructure/platform exercises. The complete secure-cookie login/payment
@@ -25,7 +30,8 @@ journey still requires a suitable HTTPS access path before it can be verified.
 Infrastructure, platform bootstrap and image publication are independent lifecycles.
 Images can be prepared before a session, but they are not a prerequisite for EKS
 or platform installation.
-GitHub variables `DELIVERY_ENABLED=false` and `INFRA_ENABLED=false` keep cloud jobs disabled.
+GitHub variables `DELIVERY_ENABLED=false` and `INFRA_ENABLED=false` block new cloud
+jobs; they do not stop resources already created by the approved Apply run.
 `deploy/environment.yaml` also starts disabled. Do not claim the AWS end-to-end
 deployment has passed until you have performed the activation exercises below.
 
@@ -637,12 +643,42 @@ intentionally dispatched sessions.
 
 Subscribe/confirm the SNS email: unconfirmed subscriptions do not deliver alarms.
 
+### Recover a partially failed Apply
+
+A failed Terraform Apply can leave healthy, billable resources. Keep the remote
+state, inspect the workflow error and inventory, and fix the specific permissions
+before generating a new plan. The first run created EKS/RDS but no worker.
+
+The fix adds runtime-secret `GetResourcePolicy` to the scoped read statement shared
+by Plan and Apply. EKS with a custom launch template also requires the caller to
+have `ec2:RunInstances` and `ec2:CreateTags`: template use is restricted by the
+Project tag, launch inputs by account/region and template context, and created
+instances/volumes/interfaces by required ownership tags. Tagging is permitted only
+at launch. These are caller permissions, separate from the worker role and its
+existing permissions boundary. See [AWS's EKS launch-template guidance](https://docs.aws.amazon.com/eks/latest/userguide/launch-templates.html).
+
+Pipeline identities cannot change their own IAM policies; the MFA bootstrap role
+also cannot edit these pipeline policies. An account administrator must publish
+reviewed changes to managed policies `commerce-aws-apply-network` and
+`commerce-aws-apply-read`, and inline policy `commerce-aws-plan` on the
+`commerce-aws-plan` role. Keep their Terraform definitions as the source, verify
+the resulting AWS documents and refresh bootstrap state. No additional permanent
+administrator role or broad EC2 access is needed. Generate a fresh session plan
+against the saved partial state, review any tainted-resource replacement, and use
+a new protected approval. This does not yet prove the next Apply or destroy works.
+
 ## 5. Install the platform and private administration tools
 
-The helper checks the AWS account, cluster name and actual API endpoint. It targets
+Use a kubectl within one minor version of the EKS API. The system client was 1.32.3;
+the current project-local client is checksum-verified 1.35.10. Follow the official
+[Kubernetes installation instructions](https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/)
+when preparing a new machine. The helper checks the AWS account, cluster name and actual API endpoint. It targets
 the dedicated `commerce-aws` context, never your local kind cluster:
 
 ```bash
+# Use the project-local compatible kubectl and a dedicated AWS kubeconfig.
+export PATH="$PWD/.work/bin:$PATH"
+export KUBECONFIG="$PWD/.work/commerce-aws.kubeconfig"
 # Optional: download and validate the pinned Argo CD bootstrap chart.
 bash scripts/platform.sh prepare
 # After infrastructure exists, prepare non-secret configuration for a reviewed PR.
@@ -1257,7 +1293,8 @@ For destroy, it first checks the session VPC for load balancers and checks for
 project-tagged CSI volumes. A failure blocks that workflow apply. This is a partial
 guard: it does not discover every untagged orphan or stop a local Terraform apply.
 The apply role is defined in `bootstrap/apply-identity.tf` and `apply-services.tf`
-and is provisioned, but still needs live testing. Its two-hour session
+and is provisioned. Its first live Apply created part of the session and exposed
+missing launch/secret-policy reads; end-to-end creation and teardown remain unverified. Its two-hour session
 covers the 90-minute apply-job limit; an expired or failed apply still needs careful
 state inspection before a new plan/retry.
 

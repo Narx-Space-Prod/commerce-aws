@@ -21,7 +21,7 @@ locals {
       "secretsmanager:ListSecretVersionIds", "acm:DescribeCertificate", "route53:GetHostedZone",
       "route53:ListResourceRecordSets", "route53:GetChange", "tag:GetResources"
     ] },
-    { Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:commerce-aws-runtime-*" },
+    { Effect = "Allow", Action = ["secretsmanager:GetSecretValue", "secretsmanager:GetResourcePolicy"], Resource = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:commerce-aws-runtime-*" },
     { Effect = "Allow", Action = ["s3:GetBucketLocation", "s3:GetBucketVersioning"], Resource = "arn:aws:s3:::${var.state_bucket_name}" },
     { Effect = "Allow", Action = ["s3:ListBucket"], Resource = "arn:aws:s3:::${var.state_bucket_name}", Condition = { StringLike = { "s3:prefix" = ["session/terraform.tfstate", "session/terraform.tfstate.tflock", "plans/*"] } } },
     { Effect = "Allow", Action = ["s3:GetObject"], Resource = ["arn:aws:s3:::${var.state_bucket_name}/session/terraform.tfstate", "arn:aws:s3:::${var.state_bucket_name}/session/terraform.tfstate.tflock"] },
