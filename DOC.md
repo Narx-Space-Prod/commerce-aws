@@ -1034,7 +1034,7 @@ outputs, permissions, side effects, failures and how to rerun safely.
 | `changes.py` | Git diff selects components; workflows/build scripts invalidate all builds; inventory/platform changes do not; cart is independent of Java |
 | `release.py` | Publisher records merge into one JSON manifest; exact component/account/region/digest validation |
 | `check_chart.py` | Temporary enabled/disabled renders, core API schemas and container security checks; no cloud access |
-| `secrets.py` | Hidden Slack input, generated Grafana password, fixed context/scope, preservation, stdin-only secret writes |
+| `seed_secret.py` | Hidden Slack input, generated Grafana password, fixed context/scope, preservation, stdin-only secret writes |
 | `inventory.py` | Read-only before/after resource reports, account guard, untagged resources and explicit incomplete-result handling |
 
 The shell helpers install checksum-verified tools and perform explicit EKS platform
@@ -1338,7 +1338,7 @@ needed to identify **input → validation → action → output → failure**. S
 * `scripts/inventory.py`: checks the expected account, runs a fixed read-only list
   of AWS queries, records private timestamped JSON, and reports errors as incomplete.
   It does not delete anything or guarantee coverage of every region/service.
-* `scripts/secrets.py`: requires the dedicated Kubernetes context, preserves an
+* `scripts/seed_secret.py`: requires the dedicated Kubernetes context, preserves an
   existing secret, generates a Grafana password or accepts a hidden Slack webhook,
   and passes the Kubernetes object over stdin. It does not create an AWS secret.
 * `scripts/platform.sh`: verifies account, cluster and endpoint before installing

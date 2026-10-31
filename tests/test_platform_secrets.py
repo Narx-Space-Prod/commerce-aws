@@ -9,13 +9,13 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
-SCRIPT = Path(__file__).parents[1] / 'scripts/secrets.py'
+SCRIPT = Path(__file__).parents[1] / 'scripts/seed_secret.py'
 
 
 class PlatformSecrets(unittest.TestCase):
     def execute(self, existing, environment=None, context='commerce-aws'):
         output = io.StringIO()
-        with patch('sys.argv', ['secrets.py', 'slack']), \
+        with patch('sys.argv', ['seed_secret.py', 'slack']), \
              patch.dict(os.environ, environment or {}, clear=False), \
              patch('subprocess.check_output', return_value=context), \
              patch('subprocess.run', side_effect=[existing, subprocess.CompletedProcess([], 0)]) as command, \
