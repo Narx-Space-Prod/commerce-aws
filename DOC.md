@@ -6,15 +6,18 @@ on your laptop Kubernetes cluster or the previous six-repository delivery system
 
 **Status snapshot, 31 October 2026:** The temporary IAM setup role has been deleted.
 The retained foundation exists: the private
-state bucket, four empty ECR repositories, budget, GitHub OIDC provider, publisher
+state bucket, four ECR repositories with the first signed images, budget, GitHub OIDC provider, publisher
 and planning identities, and the MFA bootstrap identity. Their configuration is
 tracked in Terraform. The release App's authentication test passed. A read-only
 session plan was generated; **the EKS session, database, application and monitoring
 have not been deployed**. The apply identity and its six policies have been provisioned; actual AWS apply
 and destroy behaviour remain unverified.
 The AWS trusts were corrected to GitHub's immutable subject format, and the
-plan-only workflow subsequently passed. Publication and actual session deployment
-remain unverified.
+plan-only and protected identity verification workflows subsequently passed. The
+first image publication run 41198659786 passed; all four signatures and CycloneDX
+attestations were independently verified against the exact reusable `image.yml`
+identity on main. This release PR proposes those digests. Actual session deployment
+and teardown remain unverified.
 DNS/public HTTPS is deliberately deferred. No Route 53 zone, certificate or shop DNS
 record has been created for this project. Keep ingress disabled during initial
 private infrastructure/platform exercises. The complete secure-cookie login/payment
@@ -711,15 +714,16 @@ aws ecr get-login-password --region ap-south-1 | docker login \
   --username AWS --password-stdin ACCOUNT.dkr.ecr.ap-south-1.amazonaws.com
 cosign verify \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity https://github.com/Narx-Space-Prod/commerce-aws/.github/workflows/ci.yml@refs/heads/main \
+  --certificate-identity https://github.com/Narx-Space-Prod/commerce-aws/.github/workflows/image.yml@refs/heads/main \
   'ACCOUNT.dkr.ecr.ap-south-1.amazonaws.com/commerce-aws/frontend@sha256:REAL_DIGEST'
 ```
 
-Check the actual certificate identity produced by the reusable workflow in the
-first activation run. If it names `image.yml` instead of `ci.yml`, narrow the exact
-identity to the verified main workflow; do not replace it with an unrestricted
-regex. Verify the CycloneDX attestation with `cosign verify-attestation --type
-cyclonedx` using the same issuer/identity before relying on the SBOM evidence.
+The first publication was verified using the exact `image.yml` identity shown
+above. Keep the identity restricted to the intended main workflow; do not replace
+it with an unrestricted regex. Verify the CycloneDX attestation with
+`cosign verify-attestation --type cyclonedx` using the same issuer/identity before
+relying on its evidence. A future workflow identity change requires a deliberate
+verification-policy update.
 
 Merge the reviewed release/configuration PRs. Argo polls main and syncs the app.
 External Secrets creates runtime secrets; the database-user Job completes before
