@@ -32,7 +32,8 @@ resource "cloudflare_dns_record" "production_delegation" {
   name    = aws_route53_zone.production[0].name
   type    = "NS"
   ttl     = 3600
-  content = "${aws_route53_zone.production[0].name_servers[count.index]}."
+  # Cloudflare normalizes NS target names by removing their trailing dot.
+  content = trimsuffix(aws_route53_zone.production[0].name_servers[count.index], ".")
   proxied = false
   comment = "Terraform-managed delegation to the AWS production DNS zone."
 }
