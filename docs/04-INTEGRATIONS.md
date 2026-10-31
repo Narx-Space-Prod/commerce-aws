@@ -137,3 +137,101 @@ kubectl --context commerce-aws -n argocd get applications
 5. **Recovery:** plan and test a database snapshot restore, then document RPO (acceptable data loss window) and RTO (acceptable recovery time). No such test has been completed in this lab snapshot.
 6. **Teardown:** explain why Kubernetes Ingress/PVC cleanup precedes EKS destroy and why retained ECR/state/DNS are reviewed separately.
 7. **Interview statement:** “This lab demonstrates production patterns—PR gates, immutable signed images, least-privilege identities, Terraform state, GitOps, metrics and alerts—but it is deliberately single-AZ/single-node, uses short retention, and is not a highly available or production-ready service.”
+
+## 4.9 Monitoring source walkthrough: from request to Slack
+
+The application metric path is a chain of contracts:
+
+1. A service exposes an HTTP metrics endpoint. Frontend/catalogue use `/metrics`; Java processes expose `/actuator/prometheus`.
+2. A Kubernetes Service gives the pod endpoint a stable name/port and labels `app=commerce` plus `component=<name>`.
+3. `deploy/chart/templates/monitoring.yaml` emits a `ServiceMonitor`. Its selector finds those Services; the `release: monitoring` label lets the Prometheus Operator's chart selector discover this monitor. `endpoints.port: http` must equal the Service's named port, not the numeric container port.
+4. Prometheus scrapes every 30s. The relabeling changes metrics path only for components named orders/publisher/worker. Missing labels, wrong port name or path produces no target/metrics.
+5. The `PrometheusRule` is selected by the operator and evaluates PromQL. A rule becomes pending while its `for` timer runs, then firing if the expression stays true.
+6. Alertmanager groups by namespace and alert name, waits 30s to collect related alerts, then routes warning/critical to Slack. It sends resolved state too. A critical alert inhibits a warning with equal namespace/alertname, reducing duplicate notification. `Watchdog` goes to the `null` receiver.
+7. Slack webhook is read from a mounted file sourced from the `slack-notifications` Secret. The URL never appears in Git values.
+
+### What each alert expression means
+
+| Rule | Condition and delay | Operator interpretation |
+|---|---|---|
+| `CommerceServiceDown` | `up{namespace="commerce"} == 0` continuously for 2m | A discovered scrape target is failing. If target is absent entirely, `up` series may disappear; inspect Prometheus Targets and discovery too. |
+| `CommerceDeploymentUnavailable` | available replicas metric below 1 for 3m | A Deployment has no ready replica. On a small one-node cluster, resource exhaustion, image pull and dependency failures can cause this. |
+| `CommerceHTTPErrorRate` | 5xx / total request rate > 5% for 5m, only when at least 20 requests occurred in 5m | Avoids firing on one isolated failure or a near-zero denominator. `clamp_min` prevents division by zero. Inspect latency, service and upstream dependency. |
+| `CommerceOutboxStalled` | oldest outbox event age > 300s for 2m | API committed an event but publisher has not delivered it. Check publisher pods, DB, IAM and SQS errors. |
+| `CommerceQueuePollingFailures` | more than five failed polls in five minutes for 2m | Worker repeatedly cannot poll; check Pod Identity, SQS role policy, network and queue URL. |
+
+The values file configures retention and scrape cadence, not alert correctness. Six hours of retention helps a lab troubleshooting window but cannot support long-term trend analysis or compliance retention. Resource requests/limits protect the single node from unbounded monitoring memory, but alerts may be delayed if the node is under pressure.
+
+### Metrics troubleshooting tree
+
+- **No Prometheus target:** check ServiceMonitor selector/labels, namespace selector, Service labels, named port `http`, endpoint path, and operator logs.
+- **Target is down:** check pod readiness, endpoint path/port, NetworkPolicy allowing monitoring ingress, TLS/auth settings if any, then pod logs.
+- **No alert rule loaded:** check PrometheusRule label `release: monitoring`, rule namespace selection and Operator events.
+- **Expression has no series:** check whether app is enabled, enough traffic exists, metric names/labels match source code, and PromQL labels (`namespace`, `status`, `result`) exist.
+- **Alert fires but no Slack:** inspect Alertmanager route/config, secret key, webhook validity and delivery errors. Route matching uses alert labels; wrong severity can reach `null` receiver.
+- **PVC pending:** check StorageClass `gp3`, EBS CSI controller health/role and AZ topology. EBS is AZ-bound; a pod cannot mount an EBS disk in a different AZ.
+
+## 4.10 CloudWatch alarms: exact math and notification handshake
+
+The DLQ alarm watches `AWS/SQS ApproximateNumberOfMessagesVisible` with queue-name dimension, maximum statistic over 60 seconds, one evaluation period, threshold greater than zero. One visible DLQ message triggers `ALARM`. The queue-age alarm watches `ApproximateAgeOfOldestMessage`, maximum over 60-second periods, three evaluation periods, threshold >300 seconds. It therefore needs persistent backlog age, rather than one brief spike.
+
+For both alarms, missing metrics are treated as `notBreaching`, which avoids alerting just because a queue is idle/not yet publishing metrics. That also means a missing-data situation does not create an alarm; EKS/CloudWatch health must be monitored separately. `alarm_actions` publish state changes to SNS and `ok_actions` send recovery. `aws_sns_topic_policy` limits who may publish to the topic; KMS key policy allows CloudWatch to decrypt/generate data key only from this account. The email recipient must confirm SNS subscription once. An unconfirmed subscription does not receive notifications even if the alarm enters ALARM state.
+
+To investigate, inspect alarm state/reason and queue attributes, then inspect worker logs and CloudTrail for denied API calls. Queue metric values are approximate and can lag. Do not use `ReceiveMessage` merely to check if a message exists: that changes its visibility/receipt behavior and can interfere with workers.
+
+## 4.11 Queue and application consistency concepts
+
+The database transaction and SQS publish are two different systems. A naïve implementation that writes the order, commits, then sends to SQS can crash between those operations. The transactional outbox writes both order and an outbox row in the same RDS transaction; a separate publisher retries delivery. After sending, a crash may cause the same event to be sent again, so the consumer must be idempotent.
+
+An inbox/idempotency record stores the processed event key as part of the worker's database transaction. If SQS redelivers the same message, the worker sees the key and avoids repeating its side effect, then acknowledges the duplicate. The order is acknowledged only after database commit. This provides reliable at-least-once processing, not exactly-once delivery across independent systems.
+
+The visibility timeout of 60s is longer than normal brief work; if processing exceeds it, another worker can receive the same message while the first still runs. `ChangeMessageVisibility` lets the consumer extend/release visibility, but the database idempotency guard remains necessary. `maxReceiveCount=5` is a poison-message limit, not a retry guarantee for every possible outage. DLQ message retention is 14 days; operators need a runbook to inspect/replay without losing causality.
+
+## 4.12 External Secrets data path, field by field
+
+1. `ExternalSecret` names `secretStoreRef: aws-runtime`; the `SecretStore` says use AWS Secrets Manager in `.Values.region`.
+2. The `external-secrets` Kubernetes ServiceAccount is associated by Terraform with `commerce-aws-secrets` Pod Identity role.
+3. Pod Identity agent obtains temporary credentials for the controller; AWS evaluates role trust, inline policy and boundary. Only specific secret ARN patterns are readable.
+4. `dataFrom.extract` copies keys from the runtime JSON into Kubernetes Secret `commerce-runtime`; explicit `data.remoteRef.property=password` copies the master password into `commerce-db-admin` only.
+5. Pods reference individual Secret keys using `secretKeyRef`. Environment values are injected when the container starts; updates to the Secret do not necessarily refresh already-running environment variables. Restart/rollout may be needed after rotation.
+6. The bootstrap Job consumes both credentials to provision the restricted DB app user. Normal orders processes use only the app database credentials.
+
+`refreshInterval: 5m` means ESO checks periodically. It is not an instantaneous push from Secrets Manager. `creationPolicy: Owner` means ESO manages the target Secret's lifecycle. When the ExternalSecret is removed, the owned Secret may also be removed; check resource ownership before manual cleanup.
+
+## 4.13 DNS, certificate and ALB handshake
+
+A hostname works only when each layer agrees:
+
+1. The registered domain's authoritative DNS provider is Cloudflare today.
+2. Cloudflare's parent zone has NS records for `prod.narx.space`, delegating that child to the four Route 53 nameservers. The child zone is a separate authority; parent records do not automatically copy into it.
+3. ACM requests `shop.prod.narx.space` with DNS validation. Terraform creates a validation CNAME in the delegated zone and waits for ACM to issue the cert.
+4. The Kubernetes Ingress includes the issued ACM ARN and hostname. The controller provisions an ALB with HTTPS listener and HTTP redirect.
+5. A Route 53 A/AAAA alias in the delegated child zone points `shop.prod.narx.space` at the ALB DNS name/zone ID.
+6. Browser sends TLS SNI/Host for that name, ACM cert matches it, ALB routes to healthy frontend pod targets, and application `publicOrigin`/secure cookie settings agree with the public URL.
+
+Failure at any layer can look like “site is down”: NXDOMAIN is DNS/delegation; certificate pending is validation/permission; ALB exists with unhealthy targets is networking/readiness; redirect loop/mixed origin is app configuration. Check the layer-specific evidence before editing DNS. Current live status has no shop record/cert/ALB; ingress is disabled.
+
+## 4.14 Python helpers from an operator's point of view
+
+Python appears here because it is convenient for small, deterministic automation—not because the platform is secretly implemented in Python. You should understand the contract and side effects of each script, not memorize Python syntax.
+
+- `changes.py`: maps file paths to build targets; a bad mapping could skip a necessary rebuild. Read its component dictionary and path-selection order.
+- `release.py`: validates registry, component, digest, source and account/region; it is a gate against malformed promotion records.
+- `check_chart.py`: performs render/schema assertions with temporary fixtures. It is part of CI and can download pinned schema files, but does not talk to AWS/Kubernetes.
+- `inventory.py`: uses a constant list of read-only AWS CLI operations. It verifies account before queries, uses timeouts, records permission gaps and writes a private create-only report. Inspecting this is useful for understanding safe inventory design.
+- `seed_secret.py`: accepts only two named secret types; asks for sensitive input with a hidden prompt and streams a manifest to `kubectl` stdin. Its process has real Kubernetes write authority, so context guard is essential.
+
+A useful review checklist for any helper is: What inputs can a PR author control? Are they passed as data or executed as shell? Does the script have cloud credentials? What is the minimum permission? Where can secrets appear (argv, environment, logs, files, exceptions)? Does a timeout exist? What happens when a command fails halfway? What artifact is written and who owns its cleanup?
+
+## 4.15 Learn operations through small failure drills
+
+Run these only in a recreated disposable environment and use synthetic data:
+
+1. **Scrape outage:** block one app endpoint in a temporary branch, observe target status and `CommerceServiceDown`, restore via Git, verify resolved notification.
+2. **Queue backlog:** pause only the test worker, publish a test order, observe oldest-message age alarm, resume worker and observe recovery.
+3. **DLQ:** in a test-only consumer path, cause repeated deterministic failure; inspect receive count and DLQ alarm. Fix and redrive a single test message; prove idempotency prevents duplicate receipt.
+4. **Secret denial:** in a disposable role, remove a test-only permission and inspect ESO's condition/CloudTrail error. Restore the least-privilege action. Never broaden to `secretsmanager:*` on `*`.
+5. **DNS/TLS:** in a non-public test domain, trace NS delegation, ACM validation and ALB target health separately. Do not experiment on the live `narx.space` parent records.
+6. **Backup:** create a manual snapshot, wait for availability, restore into isolated capacity, verify a known synthetic order, and record elapsed recovery time and data-loss window.
+
+Every drill has four parts: change one failure condition, identify which signal detects it, restore service through the owning control plane, then document the evidence. Do not claim a drill happened just because an alert or backup resource exists.

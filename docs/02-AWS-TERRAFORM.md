@@ -23,7 +23,7 @@ flowchart TB
 
 The architecture has two Terraform roots with separate purposes. **Bootstrap** resources create the durable foundation: remote state bucket, budget, OIDC provider/roles, ECR, IAM permission boundaries and optional DNS delegation. **Session** resources create the spend-heavy temporary learning environment: VPC, EKS, worker, RDS, SQS, secrets and alarms. Session teardown should preserve bootstrap state and registries.
 
-At this documentation snapshot, a protected destroy partially removed session infrastructure: 51 resources were reported destroyed, including EKS, node group, RDS, VPC, queues and monitoring volumes; it stopped while deleting eight workload roles because the AWS apply policy lacked a narrow list-instance-profiles permission. PR #37 merged a code fix, but AWS policy update plus a new reviewed destroy plan are pending. The exact live inventory is unknown here; do not assume all remaining resources or charges are gone. Root Route 53 remains delegated from Cloudflare; retained ECR digests/state are expected. `INFRA_ENABLED=false`.
+At the last confirmed AWS snapshot (31 October 2026; not re-inventoried on 1 November), a protected destroy partially removed session infrastructure: 51 resources were reported destroyed, including EKS, node group, RDS, VPC, queues and monitoring volumes; it stopped while deleting eight workload roles because the AWS apply policy lacked a narrow list-instance-profiles permission. PR #37 merged the code fix, but the AWS-side apply policy update plus a new reviewed destroy plan were still pending at that snapshot. The old saved destroy plan must not be reused. The exact live inventory is unknown here; do not assume all remaining resources or charges are gone. Root Route 53 remains delegated from Cloudflare; retained ECR digests/state are expected. `INFRA_ENABLED=false`.
 
 ## 2.2 AWS services and why they are here
 
@@ -45,7 +45,7 @@ At this documentation snapshot, a protected destroy partially removed session in
 
 ## 2.3 Network and availability concepts
 
-The VPC module uses `10.42.0.0/16`, two public subnets spread across two Availability Zones, and two database subnets. Public subnets route to an Internet Gateway. Database subnet route tables have only the VPC-local route: no public IP route and no NAT. Database security group accepts TCP 5432 only from the EKS cluster security group.
+The VPC module uses `10.42.0.0/16`, two public subnets spread across two Availability Zones, and two database subnets. Public subnets route to an Internet Gateway. Database subnets inherit the VPC main route table, which has only the VPC-local route: no public IP route and no NAT. Database security group accepts TCP 5432 only from the EKS cluster security group.
 
 The worker node is in the first public subnet and receives a public address. No SSH ingress is created; administrative traffic uses the Kubernetes API with an operator IP allowlist. The EKS public API endpoint is also restricted to operator CIDRs. The ALB controller can provision public ingress resources when enabled. This network profile saves NAT gateway charges but exposes worker nodes to public addressing; a common production pattern places workers in private subnets and budgets for controlled outbound access.
 
@@ -130,7 +130,7 @@ Prerequisites: AWS account with MFA enabled on the root identity and a non-root 
 6. **Session infrastructure uses the protected workflow** from main: select `plan`, inspect its full plan summary, then choose `apply` only after review. Apply consumes the saved, versioned plan after protected environment approval. Do not use local `terraform apply` as a shortcut.
 7. Verify account, cluster, nodes, database, tags, alarms and costs before installing Kubernetes platform components.
 
-A fresh bootstrap or restoration should be done from repository instructions and Terraform outputs, not from stale identifiers in this guide. The current snapshot's session resources are partially destroyed and the current AWS bill has not been refreshed.
+A fresh bootstrap or restoration should be done from repository instructions and Terraform outputs, not from stale identifiers in this guide. The last confirmed snapshot's session resources were partially destroyed and AWS inventory/billing have not been refreshed in this documentation update.
 
 ## 2.7 First-time bootstrap: identity, local state, then remote state
 
@@ -295,3 +295,232 @@ This project chooses one worker, one RDS AZ, short retention and no NAT to fit a
 5. If a destroy fails, do not assume zero cost; inspect state and inventory, fix only the denied operation, then plan again.
 
 Never use broad `aws ... delete` commands or `terraform destroy -auto-approve` for cleanup. There is no universal safe “delete every tagged thing” command in an account shared with other work.
+
+## 2.13 Terraform code reading: how the graph is built
+
+Terraform is not executing each `.tf` file top-to-bottom. It loads all `.tf` files in a root directory, evaluates variables/locals, then builds a dependency graph from references. If a resource uses another resource's attribute, Terraform infers an ordering edge. `depends_on` adds an explicit edge where a meaningful dependency is not visible in an expression.
+
+Example from `session/main.tf`:
+
+```hcl
+module "network" { source = "../modules/network" ... }
+module "eks" {
+  source            = "../modules/eks"
+  public_subnet_ids = module.network.public_subnet_ids
+}
+module "data" {
+  source                    = "../modules/data"
+  vpc_id                    = module.network.vpc_id
+  cluster_security_group_id = module.eks.cluster_security_group_id
+}
+```
+
+The references make the graph: network first; EKS consumes subnets; data consumes network and EKS outputs. Terraform can create independent nodes in parallel. Destroy reverses dependency order where graph edges establish it. Kubernetes-created ALBs/volumes are outside the Terraform graph, which is why a separate preflight is necessary before destroying the cluster.
+
+### Terraform language pieces seen in this repo
+
+- `variable`: an input contract. `type`, `default`, `validation` and `description` explain the expected value and reject unsafe inputs before provider calls. Example: operator CIDRs must be explicit IPv4 `/32`, not `0.0.0.0/0`.
+- `local`: a named expression reused within a root/module. It can compose ARNs and policy JSON, but it is not stored as a separately managed AWS resource.
+- `resource`: a cloud object Terraform manages. Its address is `<type>.<local_name>` (or includes `[0]`/`["key"]` for `count`/`for_each`). Never confuse the Terraform local name with the AWS physical name.
+- `data`: reads an object managed elsewhere or AWS metadata, such as the latest compatible PostgreSQL engine version. Data sources do not create the looked-up object.
+- `module`: a reusable child configuration. Root inputs flow into it; outputs flow back to the caller. This gives ownership boundaries and reusable units.
+- `output`: a value exposed after apply for scripts/operators. IDs/ARNs are not secret payloads, but state/output files can still contain sensitive data.
+- `count` and `for_each`: make conditional or repeated instances. `count = 0` means absent; changing a list index can shift addresses. `for_each` keyed by stable names is usually easier to understand for role/repository sets.
+- `jsonencode`: builds valid JSON policies from Terraform expressions, avoiding hand-built JSON string escaping.
+- `lifecycle.prevent_destroy`: blocks Terraform from planning a destroy for a protected resource. It is a guardrail, not a backup; state removal or console deletion can still cause problems.
+- `precondition`: fails planning/apply when a resource condition is violated, such as an IAM policy exceeding AWS's size limit.
+- `moved` block: tells Terraform a resource address changed during refactoring so it can preserve the same remote object instead of destroying/recreating it.
+- Provider `default_tags`: adds standard ownership tags to compatible AWS resources. Some AWS child resources do not inherit them, so the code adds launch-template tag specifications explicitly.
+
+Use `terraform state list` only with the correct initialized backend and profile. A plan's `+`, `~`, `-`, and `-/+` mean create, in-place update, destroy, and destroy-then-recreate. Treat `-/+` as a potentially disruptive replacement. Plan output does not show every downstream service-created child resource.
+
+## 2.14 Network module: trace a packet
+
+`modules/network/main.tf` creates a `10.42.0.0/16` VPC with DNS support/hostnames, an Internet Gateway, two public subnets and two DB subnets. `cidrsubnet(vpc, 8, n)` borrows eight bits from the `/16`, creating `/24` subnets. The public subnets get indexes 0 and 1; DB subnets indexes 10 and 11. AZ order is an input contract: index 0 is the chosen worker/RDS AZ.
+
+The Internet Gateway is only attached to a route table; it does not make every subnet public by itself. The public route table has `0.0.0.0/0 → IGW` and is associated with the public subnets. The module does not create or explicitly associate separate database route tables; the DB subnets therefore use the VPC main route table, whose only configured route is the VPC-local route. There is no NAT Gateway. The Terraform provider default tags the VPC/subnets; Kubernetes subnet discovery tags `kubernetes.io/role/elb=1` tell the ALB controller these are public load-balancer subnets.
+
+Packet examples:
+
+- **Operator → EKS API:** a human's public IPv4 must match `operator_cidrs`; TLS/API authentication then maps the IAM role through the EKS access entry and cluster access policy. No SSH port is exposed.
+- **Internet → app:** if enabled, DNS resolves to an ALB. ALB listeners enforce HTTP-to-HTTPS redirect and certificate, target-type `ip` routes to pod IPs; security groups and Kubernetes NetworkPolicy then control the path. Currently ingress is disabled and no ALB is claimed live.
+- **Pod → RDS:** pod/node network path reaches the private database subnet over the VPC local route. RDS security group admits TCP/5432 only when the source security group matches the EKS cluster SG. The DB has no public address.
+- **Pod → AWS API:** EKS Pod Identity agent endpoint is allowed by the commerce egress NetworkPolicy; the service account receives temporary role credentials through the agent, not the EC2 instance profile.
+- **Pod → external service:** egress allows TCP/443 globally. This makes outbound HTTPS possible without NAT in this public-node design; it is a broad destination rule and would need tighter egress policy in a more restrictive service.
+
+A public subnet is defined by its route to an Internet Gateway, not just the subnet name. A public IP makes a worker addressable, but the security group/API rules still decide what traffic is allowed. Private nodes with NAT or VPC endpoints are a common production improvement; this repo avoids NAT's hourly/data charges for learning.
+
+## 2.15 EKS module: cluster, node and add-on roles
+
+`modules/eks/main.tf` builds several separate identities:
+
+1. The EKS **cluster role** trusts `eks.amazonaws.com` and receives `AmazonEKSClusterPolicy`; EKS uses it to manage cluster-integrated AWS resources. The boundary limits the maximum actions.
+2. The **node role** trusts EC2 and receives worker-node plus ECR pull-only managed policies; EC2 instances use it. It is not the same role as the EKS control plane.
+3. The **CNI role** trusts the Pod Identity service, has the CNI managed policy and is associated with `aws-node`. It keeps networking permissions away from the broad node role.
+4. The **EBS CSI role** trusts Pod Identity and grants the CSI controller volume actions; only the `ebs-csi-controller-sa` uses it.
+5. The optional **ingress controller role** is separately associated with its controller ServiceAccount in `kube-system`.
+
+`aws_eks_cluster` selects authentication mode `API` and disables bootstrap admin permissions for the cluster creator. Terraform creates an access entry for the exact operator IAM role and associates `AmazonEKSClusterAdminPolicy` at cluster scope. AWS IAM authentication answers “who is this principal?”; the EKS access policy supplies Kubernetes API authorization. A valid AWS session without this mapping can still get `Unauthorized` from `kubectl`.
+
+The public Kubernetes API endpoint is enabled but CIDR-restricted to operator `/32` addresses; private access is also on. Changing ISP/VPN changes the public IP and may require a reviewed Terraform variable update. Do not solve this by opening `0.0.0.0/0`.
+
+The managed node group is On-Demand, desired/min 1, max 2, one subnet, and `max_unavailable=1`. Its launch template sets 30 GiB encrypted gp3 root storage, deletion on instance termination, explicit instance/volume/network-interface tags, and IMDSv2 tokens required with hop limit 1. EKS control-plane logs enabled are API, audit and authenticator; retention is three days.
+
+Add-on order matters. Pod Identity agent must exist before Pod Identity associations work. VPC CNI uses prefix delegation/network policy config and its scoped role; `kube-proxy` supplies service routing; CoreDNS starts after nodes; EBS CSI requires its role association and controller. `depends_on` encodes prerequisites the provider cannot infer from a simple attribute reference.
+
+One worker is a single failure domain. A node group max of two is only a ceiling: it does not automatically create a second worker. HPA changes Deployment replicas; no Cluster Autoscaler/Karpenter changes node count. A rollout with `maxSurge: 1` may require spare CPU/memory to start the replacement before removing the old pod. This lab is intentionally not multi-AZ application HA.
+
+## 2.16 Data module: durable versus disposable state
+
+- **RDS subnet group:** names the two private database subnets so the managed service has subnet placement options.
+- **RDS security group:** accepts only PostgreSQL TCP 5432 from the cluster security group. There is no public DB rule.
+- **Engine/parameter group:** selects a PostgreSQL 17 compatible engine version and enables `rds.force_ssl`; applying that parameter may require reboot.
+- **DB instance:** `db.t4g.micro`, gp3 encrypted 20 GiB with autoscaling ceiling 25 GiB, single-AZ, private, one-day automated backup retention, managed master password. `snapshot_identifier` optionally restores an existing manual snapshot. `skip_final_snapshot=true` and `delete_automated_backups=true` make session teardown destructive.
+- **Runtime secret:** random session and application DB passwords plus connection values are written to Secrets Manager. A generated secret string can appear in Terraform state, which is another reason to protect state and backend access.
+- **SQS:** the paid queue enables long polling and a 60-second visibility timeout. Five failed receives redrive to a 14-day DLQ; a redrive allow policy limits which source queue can use it. Queue-side encryption is SQS-managed.
+- **Pod Identity:** queue policies are minimal. Publisher sends; worker receives/deletes/changes visibility. The `secrets` role can read the exact runtime and RDS master secrets. Service account and namespace names must agree with Helm.
+- **Notifications:** customer-managed KMS key encrypts SNS; key rotation is enabled and deletion has a waiting period. SNS policy permits only matching CloudWatch alarms from this account. Email subscription sends a confirmation message; Terraform cannot click the user's email confirmation.
+
+A database password in Secrets Manager and a Secret ARN in Git are different things: the ARN is an identifier; secret payload is sensitive. Keep both Terraform state and Kubernetes Secret access restricted. Secret rotation must update consumers safely; changing a stored value does not automatically restart a process that read an environment variable at startup.
+
+## 2.17 Saved plans, locks and partial operations
+
+The infrastructure workflow has a deliberate handoff:
+
+1. The plan runner checks out a commit, initializes S3 with `session/terraform.tfstate`, obtains short-lived plan-role credentials and creates a binary plan.
+2. Terraform state locking prevents a second writer from planning/applying against the same state at the same time. The lock object is not the state itself.
+3. Workflow uploads the binary plan to `plans/<run-id>/<attempt>.tfplan` with server-side encryption and receives the S3 object version ID. It calculates a SHA-256 checksum and exposes only key/version/checksum as job outputs.
+4. Protected apply starts separately, assumes apply role, initializes the same backend, downloads the **specific object version**, verifies checksum and checks workload roles have exact boundaries.
+5. `terraform apply <saved-plan>` executes that reviewed decision. It does not silently recalculate against new configuration. If state has changed or the plan is stale, Terraform should reject it; create a new plan and review again.
+6. Temporary plan file and generated tfvars are removed by shell traps. S3 lifecycle deletes plan versions after one day; state is retained/versioned.
+
+A partial AWS operation can leave real resources even when the GitHub run fails. Terraform state records completed provider actions, but eventual consistency and denied cleanup calls can leave objects behind. After failure, capture the error, inspect CloudTrail and state, run a fresh plan, and inventory controller-owned or IAM objects. Never assume “job failed” means “nothing happened” or blindly rerun destroy.
+
+## 2.18 Rebuild the lab safely: operator checklist
+
+Use this order when a future session is intentionally provisioned:
+
+1. Confirm main contains the reviewed infrastructure and application code; verify GitHub Environments and IAM OIDC trust are correct.
+2. Confirm the expected AWS account ID, Mumbai region and active MFA/role session. Take the before-inventory with `scripts/inventory.py` and note its errors/limitations.
+3. Confirm the bootstrap bucket and state object exist; verify Terraform state backend and lock path. Confirm the eight workload boundary policies and seven apply policies match Terraform; update any missing AWS policy only through the controlled IAM owner process.
+4. Check the budget recipient, email confirmation, current prices and service-region availability. Ensure billing alerts are not mistaken for a spending cap.
+5. Run the infrastructure workflow `plan`; read all actions. Unexpected recreation, unrelated DNS changes, broad IAM writes or missing tags are stop conditions.
+6. Request protected apply approval only after the plan matches intent. Wait for EKS/RDS readiness, confirm output identifiers and access entry, then run a fresh inventory.
+7. Prepare platform values from outputs; submit generated non-secret configuration in a PR. Only then run Argo bootstrap. Make sure monitoring and CSI controllers are healthy before workloads create PVCs.
+8. After app release PR merge, observe Argo status, Deployment rollout, HPA metrics, database connectivity, queue processing and user flow. Record a baseline.
+9. Before ending the session, stop public ingress, take/verify any required manual DB snapshot, run ordered Argo cleanup, inspect ALB/target groups/EBS, then execute a fresh saved destroy plan.
+10. Inventory again and compare before/after reports. Inspect retained bootstrap resources and Billing/Cost Explorer after charges post. Keep state, ECR, zones, KMS deletion windows and snapshots intentionally.
+
+This checklist is a learning practice, not a guarantee that AWS policy behavior or service quotas are validated offline. A live dry-run/test in the intended account remains a prerequisite before calling an IAM workflow operational.
+
+## 2.19 IAM policy deep dive: why each condition exists
+
+An IAM statement is a tuple: `Effect` (`Allow` or `Deny`), `Action` (API permissions), `Resource` (ARNs), and optional `Condition`. AWS first evaluates identity/resource/trust policies and then applies explicit denies, permission boundaries, session policies and organization controls. An allow in one document does not override an explicit deny or a missing condition.
+
+Here is a conceptual example from the policy style used in this project (not a copy/paste policy):
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["sqs:SendMessage"],
+  "Resource": "arn:aws:sqs:ap-south-1:ACCOUNT:commerce-aws-order-paid"
+}
+```
+
+This does not allow receiving/deleting messages or sending to any queue. The publisher's identity policy and boundary both need to allow `SendMessage`; a queue policy could still deny it. This is smaller and easier to reason about than granting `sqs:*` on `*`.
+
+### Trust statements versus permission statements
+
+`assume_role_policy` on an IAM role is a **trust/resource policy**. It names a principal (for example GitHub OIDC, `eks.amazonaws.com`, `ec2.amazonaws.com`, or `pods.eks.amazonaws.com`) and the STS action allowed to assume the role. An attached managed policy or `aws_iam_role_policy` is a **permission policy**. It lists what an assumed session can do.
+
+For GitHub roles, `apply-identity.tf`/`registry.tf` check claims such as:
+
+- `aud == sts.amazonaws.com`: the token is intended for AWS STS.
+- `sub == repo:<numeric-owner-and-repo-identity>:environment:<named-environment>`: only the correct repository/environment subject can assume it.
+- apply additionally checks `ref == refs/heads/main`.
+
+GitHub Environment names are identity inputs because they appear in the OIDC subject. Renaming/removing an Environment can stop assumption; broadening the subject to all branches would let unreviewed code request that role. GitHub-side reviewers gate the job; AWS-side trust restricts who the job is. Both are required.
+
+For Pod Identity, trust accepts `pods.eks.amazonaws.com` and requires the request tag `eks-cluster-arn` to equal this cluster ARN. Terraform's `aws_eks_pod_identity_association` then binds role ARN to namespace/service account. An unrelated cluster cannot reuse the role just by creating a service account with the same name.
+
+### The plan role
+
+`plan-identity.tf` grants discovery APIs needed by Terraform providers, state `GetObject`, state lock `Get/Put/Delete`, and saved plan `PutObject`. It may read the runtime secret metadata/value because Terraform refreshes the secret resource. It does not have `PutObject` on the Terraform state object or any session-resource create/update/delete action. The plan is therefore reviewable but cannot provision. The S3 bucket resource and object ARNs differ: `ListBucket` applies to the bucket ARN and is prefix-limited; `GetObject`/`PutObject` apply to object ARNs.
+
+### The apply role
+
+`apply-identity.tf` constructs role-level operations: create the exact session roles with required permissions boundary; attach only approved AWS managed policy ARNs; put inline policies only on publisher/worker/secrets/ingress roles; pass cluster/node roles only to EKS/EC2 and Pod Identity roles only to `pods.eks.amazonaws.com`; create only named service-linked roles; and inspect/list instance profiles only for the exact eight roles. This is why an IAM permission failure must be diagnosed against the specific role ARN/API instead of fixed with `iam:*`.
+
+`apply-services.tf` divides permissions into seven documents because IAM managed policies have size limits and separate domains:
+
+- **`iam`:** create/delete/tag/attach narrowly named roles, apply the required boundaries, pass roles only to specific AWS services, create listed service-linked roles. No write access to the apply role's own trust/permissions or the boundary policies.
+- **`network`:** VPC/subnet/IGW/route/security group/launch template and worker `RunInstances` permissions. New resources must carry project request tags; changes to existing resources require project resource tags. `RunInstances` is split across launch template, AMI/subnet/security group and created instance/volume/interface because AWS authorizes each resource type separately. Tagging is required at launch.
+- **`cluster`:** EKS cluster/node-group/add-on/access-entry/Pod Identity association CRUD for the fixed `commerce-aws` names and region.
+- **`data`:** exact RDS identifiers/subnet/parameter group, queue names, runtime secret name pattern, project KMS keys, SNS topic, CloudWatch alarm and EKS log group operations. Some KMS create APIs require `Resource:"*"`, constrained by request-region and project request tags.
+- **`dns`:** request only `shop.prod.narx.space` DNS-validated RSA-2048 cert with expected request tags; manage only tagged project certificates; change only the ACM validation CNAME under `_*.shop.prod.narx.space` and A/AAAA alias for exact shop name in exact hosted zone. The source permission exists, but the live AWS managed policy is not confirmed updated.
+- **`state`:** backend lock/state operations and reading versioned saved plans required to apply; object prefix and bucket names are restricted.
+- **`read`:** reuses plan discovery statements plus load balancer describe needed by destroy preflight; reads can be broader than writes because AWS APIs do not always support resource scoping.
+
+A policy can be syntactically valid and still not be sufficient: AWS APIs sometimes check dependent actions, resource types and request tags in ways that are only visible during a real create/update/delete. Policy tests and IAM simulation are helpful but do not prove an end-to-end plan. This is why actual environment activation needs a low-risk reviewed trial and CloudTrail inspection.
+
+## 2.20 Bootstrap Terraform code: ownership by file
+
+- `versions.tf` pins Terraform and AWS/Cloudflare provider ranges, sets AWS `allowed_account_ids`, and adds baseline tags. Cloudflare's token is supplied through provider environment configuration only when Terraform must update parent DNS records.
+- `backend.tf` declares S3 but leaves bucket/key/region to `terraform init -backend-config`. The bootstrap state key and session state key must remain distinct.
+- `main.tf` makes the state bucket deliberately hard to expose: S3 public access block, owner-enforced ownership, AES256 server-side encryption, bucket policy denying insecure transport and versioning. `prevent_destroy` protects the bucket from an ordinary plan. Versioning enables recovery from object overwrite but is not a separate backup account.
+- `budget.tf` creates an account-wide monthly USD budget (default `$8`) with actual 50%/80% and forecast 100% alerts. It includes taxes, excludes credits/refunds in the current code, and notifies by email. This value is not the user's INR target and cannot stop charges; the account can incur more before the alert arrives.
+- `registry.tf` creates four repositories under `commerce-aws/`, immutable tags, scan-on-push and AES256 encryption. `force_delete=false` and `prevent_destroy` keep images/repositories from being silently removed. The publisher role's OIDC trust is environment-scoped; `ecr:GetAuthorizationToken` is a global action, while layer/image actions are restricted to the four repo ARNs. A one-day lifecycle is configured for sensitive saved plans, not necessarily all image retention.
+- `dns.tf` can retain a Route 53 `narx.space` zone and, when enabled, a `prod.narx.space` zone and four NS records in Cloudflare. Creating a hosted zone alone does not make it authoritative. Cloudflare remains parent authority and its API token is an external secret input; existing mail/Tunnel records must not be overwritten. Both zones use `prevent_destroy`.
+- `workload-boundaries.tf` creates managed permission boundaries from AWS policy snapshots and narrowly authored app policies. Policy snapshots are point-in-time review artifacts; upstream AWS managed policies may change. Refresh them only with a reviewed compatibility/security change.
+- `access.tf` is optional human setup, not application identity. Its MFA trust requires a specific user ARN. The boundary/write statements deliberately omit session provisioning operations.
+- `plan-identity.tf`, `apply-identity.tf`, `apply-services.tf` create the machine access split described above. `outputs.tf` exposes role ARNs, bucket names, ECR URLs and DNS identifiers—not secret payloads.
+
+## 2.21 Session Terraform code: inspect variables and outputs before a plan
+
+`session.example.tfvars` documents the inputs required by the root. Review each value:
+
+- `account_id` is validated as exactly 12 digits and the provider enforces that account (`allowed_account_ids`). This catches accidentally using a personal/default profile.
+- `region` defaults to Mumbai. Changing region affects every regional ARN and service availability; the bootstrap state bucket/backend can remain in its selected region.
+- `name` is fixed to `commerce-aws` because IAM policy boundaries are intentionally hard-coded to this project's resource prefix.
+- `availability_zones` must contain exactly two distinct AZs. Their order matters: node group and DB use the first; second provides subnet-group and EKS API subnet topology, not a second worker.
+- `operator_cidrs` requires one or more IPv4 `/32`s. Public IP changes can break API access; update through reviewed Terraform, not a wide-open CIDR.
+- `operator_role_arn` must be a persistent IAM role ARN, not an STS assumed-role session ARN. EKS access entry associates a role identity.
+- `kubernetes_version` and `instance_type` have defaults but must be checked against current AWS support/availability and budget before provisioning.
+- `existing_backup_snapshot` is optional; when set, RDS is restored from that manual snapshot. Verify snapshot region, availability and account ownership first.
+- `budget_email` feeds budget/notification configuration; confirming SNS email still requires a human click.
+
+`session/outputs.tf` gives cluster/account/region/VPC, database identifier, runtime/master secret ARNs and queue URLs. Scripts consume these outputs to avoid hand-copying identifiers. Outputs are metadata; avoid `terraform output -json` in a public/logged context, and never query secret payloads through outputs.
+
+## 2.22 AWS console versus command-line evidence
+
+Console status and CLI status are views into the same AWS control plane. A console message like “Unauthorized” for Kubernetes resources may mean the console's current IAM principal has no EKS access entry/policy; it does not mean the cluster is absent. Conversely, `aws eks list-clusters` showing a name does not prove nodes or workloads exist.
+
+Use a sequence that separates authentication, authorization and resource existence:
+
+```bash
+# 1. Which AWS identity and account did this profile select?
+aws sts get-caller-identity --profile YOUR_PROFILE
+# 2. Does the cluster control-plane object exist?
+aws eks describe-cluster --name commerce-aws --region ap-south-1 --profile YOUR_PROFILE
+# 3. Does the caller have a valid EKS API context?
+aws eks update-kubeconfig --name commerce-aws --region ap-south-1 --profile YOUR_PROFILE --alias commerce-aws
+kubectl --context commerce-aws get nodes
+# 4. Does managed node group exist and what is its health?
+aws eks describe-nodegroup --cluster-name commerce-aws --nodegroup-name session --region ap-south-1 --profile YOUR_PROFILE
+```
+
+If step 1 fails, resolve CLI login/profile/MFA. If step 2 says not found, do not proceed to kubeconfig. If `kubectl` returns Unauthorized, verify the IAM role ARN in the EKS access entry and associated policy. If nodes are absent/not ready, inspect node group health and subnet/role prerequisites. This layered diagnosis avoids confusing “AWS credentials”, “EKS authorization”, “cluster exists”, and “workloads healthy” as one problem.
+
+## 2.23 Terraform tests: what they prove and what they cannot
+
+Terraform's native `terraform test` files use `mock_provider`/`mock_resource` so they can inspect planned configuration without creating AWS resources. This makes them fast and safe for pull requests, but it means they do not validate live AWS IAM evaluation, quota, eventual consistency, account organization policies or actual service availability.
+
+- `bootstrap/tests/security.tftest.hcl` checks that eight boundaries exist and fit IAM policy size, separates SQS publisher/worker actions, retains versioned state, protects ECR repositories, and scopes ECR publisher trust to the GitHub Environment.
+- `bootstrap/tests/access.tftest.hcl` verifies the optional human role is a one-hour MFA-only trust, rejects root/other-account users, checks explicit actions/resources, and ensures bootstrap cannot create EC2/EKS/RDS or edit its own/boundary access.
+- `bootstrap/tests/plan-identity.tftest.hcl` checks OIDC audience/environment/ref claims and asserts the plan role does not create resources or overwrite Terraform state.
+- `bootstrap/tests/apply.tftest.hcl` checks apply trust, mandatory workload boundaries, protected identities, scoped EC2 RunInstances/tag conditions, narrow runtime secret reads and DNS/certificate names/record types.
+- `session/tests/security.tftest.hcl` exercises EKS/data child modules with mock outputs and checks node metadata/tagging/API access/CNI settings, DB encryption/private/single-AZ profile, workload boundaries, and queue/notification identity expectations.
+
+These tests are executable policy documentation. Read each `assert` as a sentence: it encodes a security invariant that a refactor must preserve. When an assertion fails, determine whether the intended design changed or the implementation regressed; do not delete an assertion merely to make CI green.
+
+The separate `terraform validate` checks configuration/provider schema. `terraform fmt -check` checks formatting. `terraform plan` queries a live account and compares it with state. A mocked test can pass while the live AWS call is denied; a plan may pass while apply later fails due to a service condition. They test different layers and all are useful.
