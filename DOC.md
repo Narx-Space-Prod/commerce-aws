@@ -744,6 +744,10 @@ inspect Application conditions and pod events before retrying. Local tests cover
 ownership, configuration and cleanup ordering. Live reconciliation, operator
 admission, node pod/IP capacity and memory fit still require the first EKS session;
 a single worker is a learning sizing target, not a verified capacity guarantee.
+The Argo application-controller requests 512 MiB and has a 1 GiB limit after the
+initial cluster-wide sync exceeded the previous 512 MiB limit. Revisit this sizing
+as the number of managed applications and Kubernetes resources grows. The platform
+AppProject explicitly permits the AWS controller's `IngressClass` cluster resource.
 Offline renders currently contain about 20 steady platform pods, before EKS
 add-ons and commerce pods. Terraform therefore enables VPC CNI **prefix delegation**
 (`ENABLE_PREFIX_DELEGATION=true`, `WARM_PREFIX_TARGET=1`) before creating the node

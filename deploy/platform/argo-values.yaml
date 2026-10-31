@@ -30,10 +30,10 @@ server:
 controller:
   resources:
     requests:
-      cpu: 100m
-      memory: 192Mi
-    limits:
+      cpu: 250m
       memory: 512Mi
+    limits:
+      memory: 1Gi
 repoServer:
   resources:
     requests:
