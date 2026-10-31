@@ -20,12 +20,13 @@ are Synced and Healthy. Prometheus, Grafana and Alertmanager are running; the
 Alertmanager Slack secret is mounted. No test alert has been sent.
 
 The commerce Application is registered but the environment is deliberately disabled:
-`deploy/environment.yaml` has `enabled: false` and ingress disabled. The domain's
-DNS is currently managed in Cloudflare. The Terraform change in progress defines a
-retained Route 53 public zone for `narx.space`; it is not created until that change is
-merged and applied. There is no ALB, certificate, shop record or registrar delegation.
-Keep the existing Cloudflare nameservers until every current DNS record has been
-exported, recreated and verified in Route 53.
+`deploy/environment.yaml` has `enabled: false` and ingress disabled. Bootstrap
+Terraform now manages retained public Route 53 zone `narx.space` (hosted-zone ID
+`Z06237232MW4CNEZD77K6`). It currently contains only Route 53's default NS and SOA
+records. Cloudflare remains authoritative; no registrar delegation was changed. There
+is no ALB, ACM certificate or shop record. Export and review the complete Cloudflare
+record set before recreating records in Route 53 or changing nameservers at the
+registrar.
 Secure public HTTPS is needed before exercising login or checkout with real browser
 sessions. The Razorpay test credentials are not configured.
 
@@ -478,7 +479,7 @@ This one-time migration is deliberate; Terraform cannot create its own backend
 before that bucket exists. Do not repeatedly create new state buckets.
 
 Check the budget in AWS Billing before starting the session. Review its recipients.
-The bucket, ECR repositories and planned public Route 53 zone have `prevent_destroy`;
+The bucket, ECR repositories and public Route 53 zone have `prevent_destroy`;
 session teardown does not delete them. Do not disable those guards to fix an unrelated
 Terraform error. Route 53 charges $0.50 USD per public hosted zone per month for
 the first 25 zones, plus query charges where applicable; this is a persistent cost
@@ -839,12 +840,13 @@ Actions/Argo remain the delivery status source.
 
 ## 6. Configure HTTPS and the first signed release
 
-For an existing Route 53 public hosted zone, set `shop_hostname` and
-`route53_zone_id` in the session variables. Terraform provisions the regional ACM
-certificate and its DNS validation record and waits for issuance. It does not buy a
-domain or create a paid hosted zone. With external DNS instead, request/validate a
-certificate manually **in the ALB region** and wait for ISSUED. Domain purchases
-and hosted-zone charges are separate from this project's session resources.
+The retained Route 53 public hosted zone exists, but Cloudflare is still authoritative.
+Do not set `shop_hostname` or `route53_zone_id` in the session variables until the
+complete DNS record set has been migrated and delegation is intentionally switched.
+After that cutover, Terraform can provision a regional ACM certificate and its DNS
+validation record and wait for issuance. The current certificate resources live in
+the disposable session state, so a session destroy removes them; keep ingress disabled
+until the certificate and hostname are verified. The project does not buy the domain.
 
 Use the non-secret Terraform output ARNs in `deploy/config.example.yaml`, update
 host/certificate/publicOrigin, then copy its reviewed contents to
@@ -1068,12 +1070,13 @@ workflows and reviewed PRs. The stack is still a single-AZ learning environment,
 an availability-equivalent production system. The following production exercises
 remain:
 
-1. **Secure customer access:** decide whether Route 53 will host `narx.space`. If so,
-   first add its public hosted zone to the retained Terraform foundation (the current
-   session HTTPS module expects an existing zone), review and apply it, then delegate
-   the returned name servers at the domain registrar. Issue and DNS-validate an ACM
-   certificate through Terraform. Keep ingress disabled until the certificate and
-   hostname are verified. Do not expose login or checkout over plain HTTP.
+1. **Secure customer access:** `narx.space` now has a retained public Route 53 zone,
+   but Cloudflare remains authoritative and the new zone has only its default NS/SOA
+   records. Export the full Cloudflare record set, recreate and verify the required
+   records through Terraform, then deliberately switch nameservers at the registrar.
+   After public DNS resolves through Route 53, issue and DNS-validate an ACM
+   certificate through Terraform. Keep ingress disabled until the certificate,
+   hostname and ALB route are verified. Do not expose login or checkout over plain HTTP.
 2. **Release and activation:** the existing ECR digests are already present and
    verified; there is no need to rebuild them just to deploy. When ready for future
    source changes, enable image publication through the reviewed release workflow.
@@ -1174,7 +1177,7 @@ entry describes intent; successful validation or a real deployment is separate.
 | `infrastructure/modules/eks/main.tf` | EKS control plane, managed nodes/launch template, API access, logging, add-ons, prefix delegation before node creation, node/CNI/storage identities and pod-identity integrations. |
 | `infrastructure/modules/data/main.tf` | RDS, SQS + DLQ, generated passwords, runtime secret and separate publisher/worker/secrets identities. Session publisher name is distinct from retained ECR publisher. |
 | `infrastructure/modules/eks/ingress.tf` and `policies/load-balancer.json` | Load Balancer Controller identity and its pinned upstream IAM policy; the controller, not Terraform, creates the ALB after an enabled ingress. |
-| `infrastructure/session/https.tf` | Optional ACM certificate and DNS validation in an existing Route 53 zone; no domain is purchased. |
+| `infrastructure/session/https.tf` | Optional ACM certificate and DNS validation in the retained Route 53 zone; it currently belongs to disposable session state, so session destroy removes it. No domain is purchased. |
 | `infrastructure/modules/data/notifications.tf` | SNS email subscription and KMS policy/key for queue notifications. Email subscription must be confirmed. |
 | `infrastructure/modules/data/observability.tf` | Queue age and DLQ CloudWatch alarms. EKS log retention is configured in `cluster.tf`. |
 | `infrastructure/session/outputs.tf`, `session.example.tfvars`, `.terraform.lock.hcl`, `tests/` | Useful references, example inputs, locked provider versions and mocked boundary checks. |
@@ -1221,7 +1224,7 @@ in the chart. CI additionally inspects the runtime image user and scans it.
 | EBS | Worker root disk and encrypted dynamically provisioned Kubernetes volumes. | CSI add-on and storage class must work. A PVC can create a billable disk outside Terraform's direct state. |
 | SQS | Order-paid queue, retries and dead-letter queue. | Pod Identity permissions must be validated. Monitor oldest message age and DLQ depth; a redrive needs investigation and duplicate-safe consumers. |
 | Secrets Manager | Runtime connection data and RDS-managed master credentials. | External Secrets and Pod Identity must work. State is also sensitive. Secret rotation and payment sandbox setup need their own exercises. |
-| ACM / Route 53 / ALB | Optional validated HTTPS certificate, DNS and public ingress. | Existing domain and hosted zone or external DNS, issued regional ACM certificate, enabled ingress and controller. DNS/ALB can add costs and are not created by default. |
+| ACM / Route 53 / ALB | Retained Route 53 zone is created; certificate, shop record and public ingress remain disabled. | Migrate DNS records and delegate the domain, issue regional ACM certificate, then enable ingress and controller. ALB adds ongoing cost; certificate/ALB are not created by default. |
 | CloudWatch / SNS / KMS | EKS log group and queue alarms delivered through an encrypted topic. | Confirm SNS email subscription; verify KMS/topic policies and alarms in a live session. Logs and key usage may cost money. |
 | AWS Budgets / Billing | Account-wide email warnings and actual spend visibility. | Budget thresholds are delayed warnings, not a stop button. Check credits, currency, taxes, other regions and actual billing separately. |
 | CloudTrail | Event history for investigating AWS management actions. | The project does not configure a durable, centralized multi-account audit archive. Do not assume event history replaces a long-term trail. |
