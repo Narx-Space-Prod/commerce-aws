@@ -20,7 +20,7 @@ run "retained_foundation" {
     error_message = "Release tags are immutable and repository destruction must fail when images remain."
   }
   assert {
-    condition     = jsondecode(aws_iam_role.publisher.assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"] == "repo:Narx-Space-Prod/commerce-aws:environment:registry-release"
+    condition     = jsondecode(aws_iam_role.publisher.assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"] == "repo:Narx-Space-Prod@346206471/commerce-aws@1439227210:environment:registry-release"
     error_message = "Only the protected registry-release environment may publish."
   }
 }

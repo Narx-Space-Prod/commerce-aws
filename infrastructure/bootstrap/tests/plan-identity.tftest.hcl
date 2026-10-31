@@ -12,7 +12,7 @@ run "plan_identity_is_constrained" {
     condition = (
       jsondecode(local.plan_trust).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:aud"] == "sts.amazonaws.com" &&
       jsondecode(local.plan_trust).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:ref"] == "refs/heads/main" &&
-      jsondecode(local.plan_trust).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"] == "repo:Narx-Space-Prod/commerce-aws:environment:infrastructure-plan"
+      jsondecode(local.plan_trust).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"] == "repo:Narx-Space-Prod@346206471/commerce-aws@1439227210:environment:infrastructure-plan"
     )
     error_message = "Only the infrastructure-plan environment can assume the role."
   }

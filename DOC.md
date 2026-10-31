@@ -4,12 +4,15 @@ This is one application in one AWS **learning** environment. It reuses the Comme
 app so that your work focuses on infrastructure and operations. It does not depend
 on your laptop Kubernetes cluster or the previous six-repository delivery system.
 
-**Status snapshot, 30 October 2026:** The retained foundation exists: the private
+**Status snapshot, 31 October 2026:** The retained foundation exists: the private
 state bucket, four empty ECR repositories, budget, GitHub OIDC provider, publisher
 and planning identities, and the MFA bootstrap identity. Their configuration is
 tracked in Terraform. The release App's authentication test passed. A read-only
 session plan was generated; **the EKS session, database, application and monitoring
 have not been deployed**. The apply identity is not yet provisioned or verified.
+The first GitHub plan-only run failed at AWS authentication because the existing
+role trust expects a name-only GitHub subject. The corrected trust must be applied
+to AWS and retested; a reviewed code change alone does not update existing roles.
 GitHub variables `DELIVERY_ENABLED=false` and `INFRA_ENABLED=false` keep cloud jobs disabled.
 `deploy/environment.yaml` also starts disabled. Do not claim the AWS end-to-end
 deployment has passed until you have performed the activation exercises below.
@@ -436,8 +439,11 @@ application review gates; do not require four separate approvals for image publi
 The infrastructure roles are **not** created with AdministratorAccess by this
 repository. Provision them with an AWS administrator after selecting the account.
 Both trust only `sts.amazonaws.com` and this repo's exact environment subject:
-`repo:Narx-Space-Prod/commerce-aws:environment:infrastructure-plan` or
-`...:environment:infrastructure-apply`. Use max session durations matching the
+`repo:Narx-Space-Prod@346206471/commerce-aws@1439227210:environment:infrastructure-plan` or
+`...:environment:infrastructure-apply`. GitHub's immutable OIDC subject includes
+the numeric owner and repository IDs; a name-only trust does not match this repo.
+Verify the current subject configuration with `gh api repos/Narx-Space-Prod/commerce-aws/actions/oidc/customization/sub`.
+Use max session durations matching the
 workflow (plan 30 minutes, apply one hour). The plan role needs discovery/read
 permissions for session resources and runtime secret refresh, state GetObject,
 plan PutObject, and state-lock Get/Put/Delete. The apply role additionally needs
