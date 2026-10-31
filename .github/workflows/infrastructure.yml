@@ -87,7 +87,7 @@ jobs:
           role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
           allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
-          role-duration-seconds: 3600
+          role-duration-seconds: 7200
       - name: Apply exactly the reviewed version and checksum
         env:
           BUCKET: ${{ vars.TF_STATE_BUCKET }}
@@ -114,4 +114,20 @@ jobs:
           fi
           aws s3api get-object --bucket "$BUCKET" --key "$KEY" --version-id "$VERSION" "$RUNNER_TEMP/session.tfplan" > /dev/null
           printf '%s  %s\n' "$CHECKSUM" "$RUNNER_TEMP/session.tfplan" | sha256sum --check --strict
+          python3 - <<'PY'
+          import json, subprocess
+          account = json.loads(subprocess.check_output(['aws', 'sts', 'get-caller-identity'], text=True))['Account']
+          for key in ('cluster', 'node', 'cni', 'storage', 'session-publisher', 'session-worker', 'secrets', 'ingress'):
+              name = 'commerce-aws-' + key
+              result = subprocess.run(['aws', 'iam', 'get-role', '--role-name', name, '--output', 'json'], capture_output=True, text=True)
+              if result.returncode:
+                  if 'NoSuchEntity' in result.stderr:
+                      continue
+                  raise SystemExit('Cannot verify workload boundary: ' + name)
+              role = json.loads(result.stdout)['Role']
+              expected = f'arn:aws:iam::{account}:policy/{name}-boundary'
+              if role.get('PermissionsBoundary', {}).get('PermissionsBoundaryArn') != expected:
+                  raise SystemExit('Unexpected or missing workload boundary: ' + name)
+          print('Existing workload boundaries verified.')
+          PY
           terraform -chdir=infrastructure/session apply -lock-timeout=5m "$RUNNER_TEMP/session.tfplan"

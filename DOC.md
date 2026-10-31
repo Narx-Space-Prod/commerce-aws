@@ -444,7 +444,7 @@ Both trust only `sts.amazonaws.com` and this repo's exact environment subject:
 the numeric owner and repository IDs; a name-only trust does not match this repo.
 Verify the current subject configuration with `gh api repos/Narx-Space-Prod/commerce-aws/actions/oidc/customization/sub`.
 Use max session durations matching the
-workflow (plan 30 minutes, apply one hour). The plan role needs discovery/read
+workflow (plan 30 minutes, apply two hours). The plan role needs discovery/read
 permissions for session resources and runtime secret refresh, state GetObject,
 plan PutObject, and state-lock Get/Put/Delete. The apply role additionally needs
 session resource CRUD, scoped PassRole, IAM session-role management, plan-version
@@ -471,10 +471,38 @@ the eight policies under administrator control and track them in bootstrap state
 before deploying the session. The existing MFA bootstrap role cannot create or edit
 these policies. Do not apply the bootstrap additions with an unreviewed identity.
 Future deployment permissions must require the corresponding boundary on each role
-creation and prevent its removal or replacement; that enforcement is still pending
-with the apply-role policy. AWS-managed policy updates do not automatically expand
+creation and prevent its removal or replacement. `apply-identity.tf` now defines
+that role-specific enforcement; it is not yet provisioned or live-tested. AWS-managed policy updates do not automatically expand
 the checked-in snapshots: review them alongside EKS/add-on upgrades. The reviewed
 resource prefix is fixed to `commerce-aws` so queue/secret caps stay consistent.
+
+The apply role uses six managed policies to keep each IAM document within its
+size limit: IAM, network, cluster, data, state and read access. Writes target the
+session resource names or project tags; EC2 creation requires project request tags,
+and existing-network changes require project ownership tags. Read discovery is
+broader, since many AWS describe/list APIs do not support useful resource scoping.
+The role cannot change its own policies/trust, the bootstrap/publisher identities,
+or the boundary policies. Service-linked-role creation is limited to the required
+AWS services; those service-owned IAM objects may be shared and are not destroyed
+as ordinary session resources. The preflight rejects existing workload roles that
+lack their expected boundary. This is a guard, not protection against a trusted
+administrator changing access concurrently.
+
+This policy is prepared for the default fresh session. Optional Terraform-managed
+ACM/Route 53 and restoring a database snapshot need additional, separately scoped
+authorization before selecting those paths; manual ACM/external DNS remains an
+option. Do not broaden permissions to all services after an AccessDenied. Review
+the exact API, its resource and condition-key requirements, update the code through
+a PR and retry a reviewed plan. Offline validation and IAM simulation cannot prove
+a complete create/update/destroy cycle; live testing remains an activation gate.
+
+Administrator setup must create the eight boundary policies, six apply policies,
+the `commerce-aws-apply` role with the generated trust and two-hour maximum session,
+and six attachments. They must be tracked in bootstrap state before continuing.
+The current scoped bootstrap identity cannot create or import this whole setup
+through privileged writes; an administrator must perform the provisioning or create
+and import the reviewed objects under controlled access. Keep `INFRA_ENABLED=false`
+and do not run a whole bootstrap apply with the existing limited role.
 
 The reviewed `infrastructure/bootstrap/plan-identity.tf` defines the plan role.
 The existing MFA bootstrap role deliberately cannot create new IAM roles. Have an
@@ -1002,9 +1030,10 @@ revision; a stale/expired/changed-state plan must be regenerated and reviewed.
 For destroy, it first checks the session VPC for load balancers and checks for
 project-tagged CSI volumes. A failure blocks that workflow apply. This is a partial
 guard: it does not discover every untagged orphan or stop a local Terraform apply.
-The apply role still needs to be designed, scoped, provisioned and live-tested.
-Also review whether the configured one-hour AWS credentials cover the 90-minute
-job; an expired session during a long apply needs a safe retry strategy.
+The apply role is defined in `bootstrap/apply-identity.tf` and `apply-services.tf`
+but still needs administrator provisioning and live testing. Its two-hour session
+covers the 90-minute apply-job limit; an expired or failed apply still needs careful
+state inspection before a new plan/retry.
 
 ### Argo CD and Kubernetes
 
