@@ -20,15 +20,15 @@ are Synced and Healthy. Prometheus, Grafana and Alertmanager are running; the
 Alertmanager Slack secret is mounted. No test alert has been sent.
 
 The commerce Application is registered but the environment is deliberately disabled:
-`deploy/environment.yaml` has `enabled: false` and ingress disabled. Bootstrap
-Terraform manages retained public Route 53 zone `narx.space` (hosted-zone ID
-`Z06237232MW4CNEZD77K6`), currently containing only its default NS and SOA records.
-Cloudflare remains authoritative. The exported zone has six hostnames proxied through
-a Cloudflare Tunnel, so a full registrar nameserver switch would interrupt those
-services. Preserve Cloudflare as the parent zone and delegate a dedicated
-`prod.narx.space` child zone to Route 53; the AWS storefront will use
-`shop.prod.narx.space`. The child zone and delegation are not yet enabled. There is
-no ALB, ACM certificate or AWS shop record.
+`deploy/environment.yaml` has `enabled: false` and ingress disabled. Cloudflare
+remains authoritative for `narx.space`, including its six existing Tunnel hostnames
+and mail records. The delegated `prod.narx.space` child zone is active in Route 53
+(hosted-zone ID `Z01554551CVM0VIMF9TWU`); public DNS resolves its four AWS
+nameservers. The older Route 53 `narx.space` zone (ID `Z06237232MW4CNEZD77K6`) is
+empty and not authoritative. There is no ALB, issued ACM certificate or AWS shop
+record. The first protected certificate apply failed before creating anything because
+the apply role lacked `acm:RequestCertificate`; a scoped IAM fix is being submitted
+for review.
 Secure public HTTPS is needed before exercising login or checkout with real browser
 sessions. The Razorpay test credentials are not configured.
 
@@ -229,9 +229,9 @@ ALB does not also belong in Terraform state: two writers would conflict.
 | Platform components and baseline resources | Argo platform Applications + pinned charts and reviewed Git values | Ordered cascading Application deletion through the helper before destroying EKS. |
 | Application Kubernetes objects | Argo CD Application + Helm chart and reviewed Git values | Stop reconciliation and remove the namespace during teardown. |
 | Manual database recovery snapshots | Snapshot exercise command, ownership tags and private inventory IDs | Intentionally retained only with a recorded purpose; delete when no longer needed. Snapshots are not automatically managed by session state. |
-| `narx.space` public hosted zone | Terraform bootstrap state with `prevent_destroy` | Retained staging zone; not delegated while Cloudflare Tunnel hostnames remain active. |
-| `prod.narx.space` child zone and Cloudflare NS delegation | Optional Terraform bootstrap resources; disabled until a scoped Cloudflare token is configured | Delegate only this child zone; registrar nameservers and existing Cloudflare records stay unchanged. |
-| ACM certificate, validation and shop alias | Pending a reviewed follow-up for `shop.prod.narx.space` | Keep shop ingress disabled until the certificate is issued and its ALB alias is reviewed. |
+| `narx.space` Route 53 hosted zone | Terraform bootstrap state with `prevent_destroy`; empty and not authoritative | Legacy retained zone from the initial foundation. Cloudflare remains authoritative; review removing this unused zone through a separate protected change. |
+| `prod.narx.space` child zone and Cloudflare NS delegation | Terraform bootstrap state; enabled in tracked `production.auto.tfvars` | Delegated to Route 53. The parent domain and its existing Cloudflare records remain unchanged. |
+| ACM certificate and DNS validation for `shop.prod.narx.space` | Terraform session state and scoped apply policy | Certificate apply is blocked until the reviewed ACM/Route 53 permissions are installed. Keep shop ingress disabled until issuance and alias review. |
 | AWS service-linked roles | AWS service lifecycle, recorded in global inventory | May be shared across workloads; retain intentionally rather than deleting shared identities blindly. |
 | Existing human IAM user/group/MFA, domain registration and registrar settings | Pre-existing account/domain administration | Keep outside Terraform; Terraform manages the Route 53 zone, not domain ownership or registrar account settings. |
 
@@ -563,8 +563,8 @@ that role-specific enforcement; it is provisioned but not yet live-tested. AWS-m
 the checked-in snapshots: review them alongside EKS/add-on upgrades. The reviewed
 resource prefix is fixed to `commerce-aws` so queue/secret caps stay consistent.
 
-The apply role uses six managed policies to keep each IAM document within its
-size limit: IAM, network, cluster, data, state and read access. Writes target the
+The apply role uses seven managed policies to keep each IAM document within its
+size limit: IAM, network, cluster, data, DNS/certificates, state and read access. Writes target the
 session resource names or project tags; EC2 creation requires project request tags,
 and existing-network changes require project ownership tags. Read discovery is
 broader, since many AWS describe/list APIs do not support useful resource scoping.
@@ -582,17 +582,21 @@ change its records. Tagging is limited to hosted-zone resources. Keep this boots
 role MFA-protected. Because it cannot rewrite its own inline policy, an AWS
 administrator must first add the exact Route 53 create and hosted-zone tagging
 statements from the reviewed `bootstrap-resources` policy to that role; the next
-Terraform bootstrap apply then records the policy configuration in state. Do not add
-Route 53 record-write permissions until a reviewed DNS migration plan exists. ACM
-and DNS-record changes require a later, separately scoped authorization. Do not
-broaden permissions to all services after an AccessDenied. Review the exact API, its
-resource and condition-key requirements, update the code through a PR and retry a
-reviewed plan. Offline validation and IAM simulation cannot prove a complete
-create/update/destroy cycle; live testing remains an activation gate.
+Terraform bootstrap apply then records the policy configuration in state. Keep
+DNS-write permissions off the bootstrap role. The separate
+`commerce-aws-apply-dns` policy scopes ACM issuance to
+`shop.prod.narx.space`, and Route 53 writes to the delegated zone, its ACM validation
+CNAME and the shop A/AAAA alias. The first certificate apply confirmed these
+permissions were missing; the updated policy must be created and attached by an AWS
+administrator, then imported into bootstrap state. Do not broaden permissions to all
+services after an AccessDenied. Review the exact API, its resource and condition-key
+requirements, update the code through a PR and retry a reviewed plan. Offline
+validation and IAM simulation cannot prove a complete create/update/destroy cycle;
+live testing remains an activation gate.
 
-Administrator setup must create the eight boundary policies, six apply policies,
+Administrator setup must create the eight boundary policies, seven apply policies,
 the `commerce-aws-apply` role with the generated trust and two-hour maximum session,
-and six attachments. They must be tracked in bootstrap state before continuing.
+and seven attachments. They must be tracked in bootstrap state before continuing.
 The current scoped bootstrap identity cannot create or import this whole setup
 through privileged writes; an administrator must perform the provisioning or create
 and import the reviewed objects under controlled access. Keep `INFRA_ENABLED=false`
@@ -846,15 +850,22 @@ Actions/Argo remain the delivery status source.
 
 ## 6. Configure HTTPS and the first signed release
 
-Cloudflare remains authoritative for `narx.space`; Route 53 will manage only the
-delegated `prod.narx.space` child zone. Bootstrap can enable the child zone and its
-Cloudflare NS records with `enable_production_subzone = true` and a token restricted
-to `narx.space` with Zone Read and DNS Edit permissions. Supply the token through
-`CLOUDFLARE_API_TOKEN` in the local process environment, never in tfvars or chat.
-After that is applied, use `shop.prod.narx.space` and the child-zone ID for the
-regional ACM certificate. The current certificate resources live in disposable
-session state, so a session destroy removes them; keep ingress disabled until the
-certificate and hostname are verified. The project does not buy the domain.
+Cloudflare remains authoritative for `narx.space`; Route 53 manages the delegated
+`prod.narx.space` child zone. Terraform creates the child zone and its four Cloudflare
+NS records, while tracked `production.auto.tfvars` keeps the delegation enabled for
+future plans. A read-only public DNS check confirmed the child resolves to Route 53.
+The scoped Cloudflare token has Zone Read and DNS Edit permissions and is supplied
+only through `CLOUDFLARE_API_TOKEN` in the local process environment, never in tfvars
+or chat. The existing Cloudflare parent records and registrar nameservers are
+unchanged. The earlier Route 53 `narx.space` hosted zone is empty and not authoritative.
+
+The next step is a protected infrastructure apply for the regional ACM certificate
+and Route 53 DNS validation record for `shop.prod.narx.space`. Its first attempt
+failed because the narrowly scoped apply role did not yet include ACM/Route 53 write
+permissions; the code PR and separate admin policy setup must complete before retry.
+The certificate and validation resources are in disposable session state; ingress
+stays disabled until issuance and the ALB alias are reviewed. The project does not
+buy the domain.
 
 Use the non-secret Terraform output ARNs in `deploy/config.example.yaml`, update
 host/certificate/publicOrigin, then copy its reviewed contents to

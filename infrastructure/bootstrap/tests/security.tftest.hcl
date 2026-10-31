@@ -4,10 +4,11 @@ mock_provider "aws" {
   }
 }
 variables {
-  account_id        = "123456789012"
-  budget_email      = "operator@example.com"
-  aws_region        = "ap-south-1"
-  state_bucket_name = "commerce-aws-test-state"
+  enable_production_subzone = false
+  account_id                = "123456789012"
+  budget_email              = "operator@example.com"
+  aws_region                = "ap-south-1"
+  state_bucket_name         = "commerce-aws-test-state"
 }
 run "retained_foundation" {
   command = apply
