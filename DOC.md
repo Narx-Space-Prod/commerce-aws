@@ -87,7 +87,8 @@ enable the local fake-payment mode on an internet-facing deployment.
 ```text
 application/              Existing frontend, catalogue, orders and cart source/tests/Dockerfiles
 infrastructure/bootstrap/ Retained S3 state bucket, ECR, publisher OIDC role and budget
-infrastructure/session/   Destroyable VPC, EKS, RDS, queues, secrets and alarms
+infrastructure/session/   Environment composition, backend, inputs/outputs and resource moves
+infrastructure/modules/   Network, EKS and data child modules
 deploy/chart/             One small Helm application chart
 deploy/platform/          Pinned platform versions, storage and Helm values
 deploy/environment.yaml   Reviewed AWS environment settings; initially disabled
@@ -923,18 +924,28 @@ role for specific pods. None of these is a reason to put long-lived keys in Git.
 `infrastructure/bootstrap` and `infrastructure/session` are two root modules with
 separate backends/state keys. Files inside a root are loaded together; filenames
 do not determine execution order. References establish the dependency graph.
-There are currently no reusable child modules. This is a valid small-stack layout;
-large organisations commonly use child modules when they need shared interfaces,
-ownership or consistent deployments across environments. A file per resource or
-a wrapper around every individual resource does not improve modularity by itself.
+The environment root now composes three child modules: `modules/network`,
+`modules/eks` and `modules/data`. The network exports public/database subnet IDs;
+EKS consumes the public subnets and exports its name/security group; data consumes
+those references and owns the private database access rules. This keeps networking
+independent of the cluster and avoids a circular dependency. Notification resources
+stay with data because their alarms directly monitor its queues. Optional certificate
+configuration remains in the root until the DNS integration is completed.
 
-After proving the initial lifecycle, useful child-module boundaries would be
-network (VPC/subnets/routes), EKS (cluster/nodes/add-ons/identities), and data
-(database/queues/runtime credentials and access). These are a potential refactor,
-not the current implementation. Preserve explicit inputs/outputs, avoid circular
-dependencies and retain the two root-state lifecycles. Moving existing resources
-requires reviewed `moved` blocks or a controlled state migration and a plan showing
-no unintended recreation; reorganising files alone does not migrate resource addresses.
+Child modules declare required providers but never configure credentials, regions,
+backends or default account tags; those come from the root. Inputs and outputs form
+the interface. Their IAM boundaries and naming conventions are specific to this
+project, rather than a claim of a general-purpose company-wide module library.
+Tests run the EKS and data modules with mocked providers and check actual resource
+security settings. Root validation still rejects unsafe operator CIDRs.
+
+`session/moved.tf` maps all previous resource blocks into their new modules,
+including all count/for_each instances. Keep these declarations while old states
+may still be used. The root outputs, account guard, variable interface, IAM names
+and backend keys are unchanged. Existing resources require a migration plan showing
+no unintended replacement. This environment has not been provisioned yet, so a
+fresh plan still contains additions; it cannot by itself demonstrate migration of
+a populated live state. Do not migrate or rename state keys during this refactor.
 
 This table describes the current source, including optional or disabled paths. An
 entry describes intent; successful validation or a real deployment is separate.
@@ -950,13 +961,13 @@ entry describes intent; successful validation or a real deployment is separate.
 | `infrastructure/bootstrap/outputs.tf`, `bootstrap.example.tfvars`, `.terraform.lock.hcl` | Non-secret outputs, example inputs and locked provider selections/checksums; real values belong in ignored private files. |
 | `infrastructure/bootstrap/tests/` | Mocked AWS tests of trust, boundaries and retained resources. Mock tests do not prove live AWS access or eventual consistency. |
 | `infrastructure/session/versions.tf`, `variables.tf` | Session providers, account allowlist and defaults/validation, including two AZs and explicit operator IPv4 `/32` addresses. |
-| `infrastructure/session/network.tf` | `10.42.0.0/16` VPC, two public and two database subnets, internet gateway, public routes and database security group. No NAT or SSH is created. |
-| `infrastructure/session/cluster.tf` | EKS control plane, managed nodes/launch template, API access, logging, add-ons, node/CNI/storage identities and pod-identity integrations. |
-| `infrastructure/session/data.tf` | RDS, SQS + DLQ, generated passwords, runtime secret and separate publisher/worker/secrets identities. Session publisher name is distinct from retained ECR publisher. |
-| `infrastructure/session/ingress.tf` and `policies/load-balancer.json` | Load Balancer Controller identity and its pinned upstream IAM policy; the controller, not Terraform, creates the ALB after an enabled ingress. |
+| `infrastructure/modules/network/main.tf` | `10.42.0.0/16` VPC, two public and two database subnets, internet gateway, public routes. Database access rules live in the data module; no NAT or SSH is created. |
+| `infrastructure/modules/eks/main.tf` | EKS control plane, managed nodes/launch template, API access, logging, add-ons, node/CNI/storage identities and pod-identity integrations. |
+| `infrastructure/modules/data/main.tf` | RDS, SQS + DLQ, generated passwords, runtime secret and separate publisher/worker/secrets identities. Session publisher name is distinct from retained ECR publisher. |
+| `infrastructure/modules/eks/ingress.tf` and `policies/load-balancer.json` | Load Balancer Controller identity and its pinned upstream IAM policy; the controller, not Terraform, creates the ALB after an enabled ingress. |
 | `infrastructure/session/https.tf` | Optional ACM certificate and DNS validation in an existing Route 53 zone; no domain is purchased. |
-| `infrastructure/session/notifications.tf` | SNS email subscription and KMS policy/key for queue notifications. Email subscription must be confirmed. |
-| `infrastructure/session/observability.tf` | Queue age and DLQ CloudWatch alarms. EKS log retention is configured in `cluster.tf`. |
+| `infrastructure/modules/data/notifications.tf` | SNS email subscription and KMS policy/key for queue notifications. Email subscription must be confirmed. |
+| `infrastructure/modules/data/observability.tf` | Queue age and DLQ CloudWatch alarms. EKS log retention is configured in `cluster.tf`. |
 | `infrastructure/session/outputs.tf`, `session.example.tfvars`, `.terraform.lock.hcl`, `tests/` | Useful references, example inputs, locked provider versions and mocked boundary checks. |
 | `deploy/chart/templates/` | Workloads and services, Redis/storage, bootstrap job, External Secrets, network policies, monitoring resources and optional ingress. |
 | `deploy/chart/values.yaml`, `deploy/environment.yaml`, `deploy/release.json` | Base defaults, reviewed environment settings and immutable release digests. Argo combines environment and release files; actual current settings start disabled. |

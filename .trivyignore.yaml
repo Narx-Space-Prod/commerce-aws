@@ -5,14 +5,14 @@ misconfigurations:
     statement: "State uses SSE-S3 AES256, versioning, private access and TLS-only policy. A customer-managed KMS key is not required for this learning backend."
     expired_at: 2027-01-30
   - id: AVD-AWS-0039
-    paths: [session/cluster.tf]
+    paths: [modules/eks/main.tf]
     statement: "EKS 1.35 encrypts Kubernetes API data by default with an AWS-owned key. No extra customer-managed key is required: https://docs.aws.amazon.com/eks/latest/userguide/envelope-encryption.html"
     expired_at: 2027-01-30
   - id: AVD-AWS-0040
-    paths: [session/cluster.tf]
+    paths: [modules/eks/main.tf]
     statement: "Public API is restricted to explicit operator /32 addresses; nodes use private API access. This lets a learning operator connect without a paid VPN or bastion."
     expired_at: 2027-01-30
   - id: AVD-AWS-0164
-    paths: [session/network.tf]
+    paths: [modules/network/main.tf]
     statement: "One public worker without SSH or public app NodePorts avoids a NAT Gateway. RDS subnets remain private; ALB is the only public application entry point. Not the private-worker production profile."
     expired_at: 2027-01-30

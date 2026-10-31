@@ -6,7 +6,7 @@ resource "aws_iam_role" "ingress" {
 }
 resource "aws_iam_role_policy" "ingress" {
   role   = aws_iam_role.ingress.id
-  policy = file("${path.module}/policies/load-balancer.json")
+  policy = var.load_balancer_policy_json
 }
 resource "aws_eks_pod_identity_association" "ingress" {
   cluster_name    = aws_eks_cluster.this.name

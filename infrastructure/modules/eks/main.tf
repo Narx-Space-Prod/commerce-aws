@@ -1,4 +1,10 @@
 locals {
+  pod_trust = jsonencode({ Version = "2012-10-17", Statement = [{
+    Effect    = "Allow", Principal = { Service = "pods.eks.amazonaws.com" }, Action = ["sts:AssumeRole", "sts:TagSession"],
+    Condition = { StringEquals = { "aws:RequestTag/eks-cluster-arn" = "arn:aws:eks:${var.region}:${var.account_id}:cluster/${var.name}" } }
+  }] })
+}
+locals {
   eks_trust = jsonencode({ Version = "2012-10-17", Statement = [{
     Effect = "Allow", Action = "sts:AssumeRole", Principal = { Service = "eks.amazonaws.com" }
   }] })
@@ -28,7 +34,7 @@ resource "aws_eks_cluster" "this" {
     bootstrap_cluster_creator_admin_permissions = false
   }
   vpc_config {
-    subnet_ids              = aws_subnet.public[*].id
+    subnet_ids              = var.public_subnet_ids
     endpoint_private_access = true
     endpoint_public_access  = true
     public_access_cidrs     = var.operator_cidrs
@@ -91,7 +97,7 @@ resource "aws_eks_node_group" "this" {
   cluster_name    = aws_eks_cluster.this.name
   node_group_name = "session"
   node_role_arn   = aws_iam_role.node.arn
-  subnet_ids      = [aws_subnet.public[0].id]
+  subnet_ids      = [var.public_subnet_ids[0]]
   instance_types  = [var.instance_type]
   ami_type        = "AL2023_x86_64_STANDARD"
   capacity_type   = "ON_DEMAND"
