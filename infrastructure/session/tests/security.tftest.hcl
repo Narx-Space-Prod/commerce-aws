@@ -29,19 +29,26 @@ variables {
   operator_role_arn  = "arn:aws:iam::123456789012:role/Operator"
   budget_email       = "operator@example.com"
 }
-run "security_boundaries" {
+run "eks_security" {
   command = apply
+  module { source = "../modules/eks" }
+  variables {
+    name                      = "commerce-aws"
+    region                    = "ap-south-1"
+    kubernetes_version        = "1.35"
+    instance_type             = "m7i-flex.large"
+    public_subnet_ids         = ["subnet-0123456789abcdef0", "subnet-1123456789abcdef0"]
+    load_balancer_policy_json = file("policies/load-balancer.json")
+  }
   assert {
-    condition = (
-      aws_iam_role.cluster.permissions_boundary == "arn:aws:iam::123456789012:policy/commerce-aws-cluster-boundary" &&
-      aws_iam_role.node.permissions_boundary == "arn:aws:iam::123456789012:policy/commerce-aws-node-boundary" &&
-      aws_iam_role.cni.permissions_boundary == "arn:aws:iam::123456789012:policy/commerce-aws-cni-boundary" &&
-      aws_iam_role.storage.permissions_boundary == "arn:aws:iam::123456789012:policy/commerce-aws-storage-boundary" &&
-      aws_iam_role.ingress.permissions_boundary == "arn:aws:iam::123456789012:policy/commerce-aws-ingress-boundary" &&
-      aws_iam_role.secrets.permissions_boundary == "arn:aws:iam::123456789012:policy/commerce-aws-secrets-boundary" &&
-      alltrue([for key, role in aws_iam_role.delivery : role.permissions_boundary == "arn:aws:iam::123456789012:policy/commerce-aws-session-${key}-boundary"])
-    )
-    error_message = "Every workload role must retain its own reviewed boundary."
+    condition = alltrue([for item in [
+      [aws_iam_role.cluster.permissions_boundary, "cluster"],
+      [aws_iam_role.node.permissions_boundary, "node"],
+      [aws_iam_role.cni.permissions_boundary, "cni"],
+      [aws_iam_role.storage.permissions_boundary, "storage"],
+      [aws_iam_role.ingress.permissions_boundary, "ingress"]
+    ] : item[0] == "arn:aws:iam::123456789012:policy/commerce-aws-${item[1]}-boundary"])
+    error_message = "Every EKS workload role needs its corresponding boundary."
   }
   assert {
     condition = (
@@ -51,16 +58,38 @@ run "security_boundaries" {
     error_message = "The managed node's instances, volumes and interfaces need project ownership tags at creation."
   }
   assert {
-    condition     = aws_db_instance.this.storage_encrypted && !aws_db_instance.this.publicly_accessible && !aws_db_instance.this.multi_az
-    error_message = "The learning DB must be encrypted, private and single-AZ."
-  }
-  assert {
     condition     = aws_eks_cluster.this.vpc_config[0].endpoint_private_access && aws_eks_cluster.this.vpc_config[0].public_access_cidrs == toset(["203.0.113.10/32"])
     error_message = "The EKS API requires private node access and an operator-only public allowlist."
   }
   assert {
     condition     = aws_launch_template.node.metadata_options[0].http_tokens == "required" && aws_launch_template.node.metadata_options[0].http_put_response_hop_limit == 1
     error_message = "Require IMDSv2 and prevent ordinary pods using node-role credentials."
+  }
+  assert {
+    condition     = aws_eks_cluster.this.upgrade_policy[0].support_type == "STANDARD"
+    error_message = "Avoid entering EKS extended support silently."
+  }
+}
+
+run "data_security" {
+  command = apply
+  module { source = "../modules/data" }
+  variables {
+    name                      = "commerce-aws"
+    region                    = "ap-south-1"
+    existing_backup_snapshot  = null
+    vpc_id                    = "vpc-0123456789abcdef0"
+    database_subnet_ids       = ["subnet-2123456789abcdef0", "subnet-3123456789abcdef0"]
+    cluster_security_group_id = "sg-0123456789abcdef0"
+    cluster_name              = "commerce-aws"
+  }
+  assert {
+    condition     = aws_iam_role.secrets.permissions_boundary == "arn:aws:iam::123456789012:policy/commerce-aws-secrets-boundary" && alltrue([for key, role in aws_iam_role.delivery : role.permissions_boundary == "arn:aws:iam::123456789012:policy/commerce-aws-session-${key}-boundary"])
+    error_message = "Every data workload role needs its corresponding boundary."
+  }
+  assert {
+    condition     = aws_db_instance.this.storage_encrypted && !aws_db_instance.this.publicly_accessible && !aws_db_instance.this.multi_az
+    error_message = "The learning DB must be encrypted, private and single-AZ."
   }
   assert {
     condition     = aws_iam_role.delivery["publisher"].name == "commerce-aws-session-publisher" && aws_iam_role.delivery["worker"].name == "commerce-aws-session-worker"
@@ -75,8 +104,8 @@ run "security_boundaries" {
     error_message = "The worker must not publish messages."
   }
   assert {
-    condition     = aws_db_instance.this.backup_retention_period >= 1 && aws_eks_cluster.this.upgrade_policy[0].support_type == "STANDARD"
-    error_message = "Keep database backups and avoid silently entering paid EKS extended support."
+    condition     = aws_db_instance.this.backup_retention_period >= 1
+    error_message = "Keep automated database backups while the session exists."
   }
 }
 run "reject_public_api" {

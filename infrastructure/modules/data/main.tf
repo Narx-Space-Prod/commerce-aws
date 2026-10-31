@@ -1,6 +1,20 @@
+# Database subnets only inherit the VPC local route. No NAT gateway, SSH rule or public DB.
+resource "aws_security_group" "database" {
+  name_prefix = "${var.name}-database-"
+  description = "PostgreSQL from EKS nodes only"
+  vpc_id      = var.vpc_id
+}
+resource "aws_vpc_security_group_ingress_rule" "database" {
+  security_group_id            = aws_security_group.database.id
+  referenced_security_group_id = var.cluster_security_group_id
+  ip_protocol                  = "tcp"
+  from_port                    = 5432
+  to_port                      = 5432
+}
+
 resource "aws_db_subnet_group" "this" {
   name       = var.name
-  subnet_ids = aws_subnet.database[*].id
+  subnet_ids = var.database_subnet_ids
 }
 data "aws_rds_engine_version" "postgres" {
   engine                 = "postgres"
@@ -105,7 +119,7 @@ resource "aws_iam_role_policy" "delivery" {
 }
 resource "aws_eks_pod_identity_association" "delivery" {
   for_each        = aws_iam_role.delivery
-  cluster_name    = aws_eks_cluster.this.name
+  cluster_name    = var.cluster_name
   namespace       = "commerce"
   service_account = "commerce-${each.key}"
   role_arn        = each.value.arn
@@ -123,7 +137,7 @@ resource "aws_iam_role_policy" "secrets" {
   }] })
 }
 resource "aws_eks_pod_identity_association" "secrets" {
-  cluster_name    = aws_eks_cluster.this.name
+  cluster_name    = var.cluster_name
   namespace       = "external-secrets"
   service_account = "external-secrets"
   role_arn        = aws_iam_role.secrets.arn
