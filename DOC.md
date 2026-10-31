@@ -499,7 +499,10 @@ compatible versions for subsequent upgrade exercises. Update the PSA version and
 schema validation together when deliberately changing Kubernetes versions.
 
 For GitHub-operated sessions, set `INFRA_ENABLED=true`, dispatch **AWS infrastructure**,
-choose apply and inspect the Plan job. Code-S-12 approves Apply, which downloads
+choose `plan` to verify the planning identity without an apply job, or choose
+`apply` and inspect the Plan job. `plan` is the default operation; it still writes
+the state lock and a private, expiring saved plan, and requires the planning role.
+Code-S-12 approves Apply, which downloads
 the exact S3 object version and checks its SHA-256 before applying. Do not run a
 local apply concurrently. State locking also prevents concurrent state changes.
 
