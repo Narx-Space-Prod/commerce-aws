@@ -38,4 +38,39 @@ run "constrained_apply" {
     ])
     error_message = "The apply role must not write bootstrap state."
   }
+  assert {
+    condition = (
+      length([for statement in local.apply_ec2_statements : statement if contains(statement.Action, "ec2:RunInstances")]) == 3 &&
+      alltrue([for statement in local.apply_ec2_statements : !contains(statement.Resource, "*")]) &&
+      alltrue([for statement in local.apply_ec2_statements : (
+        !contains(statement.Action, "ec2:RunInstances") ||
+        try(statement.Condition.StringEquals["aws:ResourceTag/Project"] == "commerce-aws", false) ||
+        try(statement.Condition.ArnLike["ec2:LaunchTemplate"] == "arn:aws:ec2:ap-south-1:123456789012:launch-template/*", false)
+      )])
+    )
+    error_message = "Worker launch permissions require project-tagged templates and regional template-based launch inputs, never unrestricted EC2 resources."
+  }
+  assert {
+    condition = (
+      length([for statement in local.apply_ec2_statements : statement if
+        try(statement.Sid == "LaunchTaggedWorkerResources", false) &&
+        try(statement.Condition.StringEquals["aws:RequestTag/Project"] == "commerce-aws", false)
+      ]) == 1 &&
+      length([for statement in local.apply_ec2_statements : statement if
+        try(statement.Sid == "TagWorkerResourcesAtLaunch", false) &&
+        try(statement.Condition.StringEquals["ec2:CreateAction"] == "RunInstances", false)
+      ]) == 1
+    )
+    error_message = "Generated worker resources must carry ownership tags; additional tag rights apply only during RunInstances."
+  }
+  assert {
+    condition = (
+      contains(jsondecode(local.plan_permissions).Statement[1].Action, "secretsmanager:GetResourcePolicy") &&
+      jsondecode(local.plan_permissions).Statement[1].Resource == "arn:aws:secretsmanager:ap-south-1:123456789012:secret:commerce-aws-runtime-*" &&
+      !contains(jsondecode(local.plan_permissions).Statement[0].Action, "secretsmanager:GetResourcePolicy") &&
+      contains(jsondecode(local.apply_policy_documents.read).Statement[1].Action, "secretsmanager:GetResourcePolicy")
+    )
+    error_message = "Both Terraform identities need secret-policy reads scoped to this project's runtime secrets."
+  }
+
 }

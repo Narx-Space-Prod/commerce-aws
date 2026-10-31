@@ -1,9 +1,18 @@
 locals {
-  regional         = { StringEquals = { "aws:RequestedRegion" = var.aws_region } }
-  new_project      = { StringEquals = { "aws:RequestedRegion" = var.aws_region, "aws:RequestTag/Project" = "commerce-aws" } }
-  existing_project = { StringEquals = { "aws:RequestedRegion" = var.aws_region, "aws:ResourceTag/Project" = "commerce-aws" } }
-  ec2_resources    = [for kind in ["vpc", "subnet", "internet-gateway", "route-table", "security-group", "security-group-rule", "launch-template"] : "arn:aws:ec2:${var.aws_region}:${var.account_id}:${kind}/*"]
+  regional                = { StringEquals = { "aws:RequestedRegion" = var.aws_region } }
+  new_project             = { StringEquals = { "aws:RequestedRegion" = var.aws_region, "aws:RequestTag/Project" = "commerce-aws" } }
+  existing_project        = { StringEquals = { "aws:RequestedRegion" = var.aws_region, "aws:ResourceTag/Project" = "commerce-aws" } }
+  ec2_resources           = [for kind in ["vpc", "subnet", "internet-gateway", "route-table", "security-group", "security-group-rule", "launch-template"] : "arn:aws:ec2:${var.aws_region}:${var.account_id}:${kind}/*"]
+  worker_launch_resources = [for kind in ["instance", "volume", "network-interface"] : "arn:aws:ec2:${var.aws_region}:${var.account_id}:${kind}/*"]
+  worker_template         = { ArnLike = { "ec2:LaunchTemplate" = "arn:aws:ec2:${var.aws_region}:${var.account_id}:launch-template/*" } }
   apply_ec2_statements = [
+    # EKS validates the caller's RunInstances/CreateTags permissions when a
+    # managed node group uses our tagged launch template. Split existing inputs
+    # from newly tagged resources: an AMI cannot satisfy aws:RequestTag.
+    { Sid = "UseProjectWorkerTemplate", Effect = "Allow", Action = ["ec2:RunInstances"], Resource = ["arn:aws:ec2:${var.aws_region}:${var.account_id}:launch-template/*"], Condition = local.existing_project },
+    { Sid = "UseWorkerLaunchInputs", Effect = "Allow", Action = ["ec2:RunInstances"], Resource = ["arn:aws:ec2:${var.aws_region}::image/*", "arn:aws:ec2:${var.aws_region}:${var.account_id}:subnet/*", "arn:aws:ec2:${var.aws_region}:${var.account_id}:security-group/*"], Condition = merge(local.regional, local.worker_template) },
+    { Sid = "LaunchTaggedWorkerResources", Effect = "Allow", Action = ["ec2:RunInstances"], Resource = local.worker_launch_resources, Condition = merge(local.new_project, local.worker_template) },
+    { Sid = "TagWorkerResourcesAtLaunch", Effect = "Allow", Action = ["ec2:CreateTags"], Resource = local.worker_launch_resources, Condition = { StringEquals = { "aws:RequestedRegion" = var.aws_region, "aws:RequestTag/Project" = "commerce-aws", "ec2:CreateAction" = "RunInstances" } } },
     { Effect = "Allow", Resource = local.ec2_resources, Condition = local.new_project, Action = ["ec2:CreateVpc", "ec2:CreateSubnet", "ec2:CreateInternetGateway", "ec2:CreateRouteTable", "ec2:CreateSecurityGroup", "ec2:CreateLaunchTemplate", "ec2:AuthorizeSecurityGroupIngress", "ec2:AuthorizeSecurityGroupEgress"] },
     { Effect = "Allow", Resource = local.ec2_resources, Condition = local.existing_project, Action = [
       "ec2:CreateSubnet", "ec2:CreateRouteTable", "ec2:CreateSecurityGroup", "ec2:DeleteVpc", "ec2:ModifyVpcAttribute", "ec2:DeleteSubnet", "ec2:ModifySubnetAttribute",
