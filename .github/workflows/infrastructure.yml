@@ -5,7 +5,7 @@ on:
       operation:
         description: Session operation (bootstrap is managed separately)
         type: choice
-        options: [plan, apply, destroy]
+        options: [plan, verify, apply, destroy]
         default: plan
       confirmation:
         description: 'For destroy, type: destroy commerce-aws'
@@ -68,7 +68,7 @@ jobs:
           printf 'key=plans/%s/%s.tfplan\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
           printf 'Review the Terraform plan in this job before approving Apply. Source: %s. Operation: %s.\n' "$GITHUB_SHA" "$OPERATION" >> "$GITHUB_STEP_SUMMARY"
   apply:
-    name: Apply reviewed saved plan
+    name: ${{ inputs.operation == 'verify' && 'Verify protected AWS access' || 'Apply reviewed saved plan' }}
     needs: plan
     if: inputs.operation != 'plan'
     runs-on: ubuntu-24.04
@@ -88,7 +88,7 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
           allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
           role-duration-seconds: 7200
-      - name: Apply exactly the reviewed version and checksum
+      - name: Verify reviewed plan and execute selected operation
         env:
           BUCKET: ${{ vars.TF_STATE_BUCKET }}
           REGION: ${{ vars.AWS_REGION }}
@@ -130,4 +130,9 @@ jobs:
                   raise SystemExit('Unexpected or missing workload boundary: ' + name)
           print('Existing workload boundaries verified.')
           PY
+          if [ "$OPERATION" = verify ]; then
+            aws sts get-caller-identity --query Arn --output text
+            echo 'Protected apply identity, state access, saved-plan version/checksum and workload-boundary reads verified. No Terraform apply executed.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           terraform -chdir=infrastructure/session apply -lock-timeout=5m "$RUNNER_TEMP/session.tfplan"
