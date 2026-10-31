@@ -93,8 +93,8 @@ PYCODE
     kubectl --context commerce-aws create namespace monitoring
   fi
   # Seed these private inputs once. The baseline Application subsequently owns the namespace.
-  python3 scripts/secrets.py grafana
-  python3 scripts/secrets.py slack
+  python3 scripts/seed_secret.py grafana
+  python3 scripts/seed_secret.py slack
   helm upgrade --install argocd "$chart_dir/argo-cd-$ARGO_CHART.tgz" --kube-context commerce-aws -n argocd --create-namespace -f deploy/platform/argo-values.yaml --atomic --wait --timeout 10m
   kubectl --context commerce-aws wait --for=condition=Established --timeout=5m crd/applications.argoproj.io
   kubectl --context commerce-aws apply -f deploy/platform-root.yaml
