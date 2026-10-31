@@ -1,6 +1,66 @@
 # 2. AWS and Terraform handbook: account to infrastructure
 
+## Contents
+
+- [Start here: cloud infrastructure from first principles](#start-here-cloud-infrastructure-from-first-principles)
+- [2.1 Architecture at a glance](#21-architecture-at-a-glance)
+- [2.2 AWS services and why they are here](#22-aws-services-and-why-they-are-here)
+- [2.3 Network and availability concepts](#23-network-and-availability-concepts)
+- [2.4 Terraform layout and code tour](#24-terraform-layout-and-code-tour)
+- [2.5 IAM in plain language](#25-iam-in-plain-language)
+- [2.6 Safe access and setup sequence](#26-safe-access-and-setup-sequence)
+- [2.7 First-time bootstrap: identity, local state, then remote state](#27-first-time-bootstrap-identity-local-state-then-remote-state)
+- [2.8 GitHub Actions and IAM activation checklist](#28-github-actions-and-iam-activation-checklist)
+- [2.9 Useful read-only and operational commands](#29-useful-read-only-and-operational-commands)
+- [2.10 State, backups and recovery](#210-state-backups-and-recovery)
+- [2.11 Cost and production tradeoffs](#211-cost-and-production-tradeoffs)
+- [2.12 Teardown principles](#212-teardown-principles)
+- [2.13 Terraform code reading: how the graph is built](#213-terraform-code-reading-how-the-graph-is-built)
+- [2.14 Network module: trace a packet](#214-network-module-trace-a-packet)
+- [2.15 EKS module: cluster, node and add-on roles](#215-eks-module-cluster-node-and-add-on-roles)
+- [2.16 Data module: durable versus disposable state](#216-data-module-durable-versus-disposable-state)
+- [2.17 Saved plans, locks and partial operations](#217-saved-plans-locks-and-partial-operations)
+- [2.18 Rebuild the lab safely: operator checklist](#218-rebuild-the-lab-safely-operator-checklist)
+- [2.19 IAM policy deep dive: why each condition exists](#219-iam-policy-deep-dive-why-each-condition-exists)
+- [2.20 Bootstrap Terraform code: ownership by file](#220-bootstrap-terraform-code-ownership-by-file)
+- [2.21 Session Terraform code: inspect variables and outputs before a plan](#221-session-terraform-code-inspect-variables-and-outputs-before-a-plan)
+- [2.22 AWS console versus command-line evidence](#222-aws-console-versus-command-line-evidence)
+- [2.23 Terraform tests: what they prove and what they cannot](#223-terraform-tests-what-they-prove-and-what-they-cannot)
+- [Guided simulation: provision, recover and account for resources](#guided-simulation-provision-recover-and-account-for-resources)
+
 This is a guided tour of the AWS design encoded by the repository. Read it before enabling the infrastructure workflow. Cloud resources cost money, and Terraform can delete them; understand the identity, state and plan before using any mutating command.
+
+## Start here: cloud infrastructure from first principles
+
+A server is a computer running software. In AWS you rent virtual computers (EC2) and managed services. A managed service transfers some operating work to AWS; it does not remove your responsibility for access, configuration, application data, backups or cost. EKS manages the Kubernetes control plane; you still choose worker capacity and configure workloads. RDS manages database hosting; you still choose database access and recovery policy.
+
+An **account** is an AWS ownership and security boundary. A **region** is a geographic deployment area, such as Mumbai. An **Availability Zone** is an isolated location within a region. Two subnets in two AZs do not create two copies of your app: replicas and placement must actually use those locations.
+
+### Address, route, permission: three separate gates
+
+An IP address locates a network interface. A route tells a packet where to go. A security group permits or blocks network traffic. IAM authorizes AWS API operations. None replaces the others. A database may be reachable over TCP but reject its SQL credentials. A user may call `DescribeCluster` in AWS but have no authorization to list Kubernetes pods.
+
+A CIDR such as `10.42.0.0/16` describes an address range. `/16` fixes the first 16 address bits. A `/24` is a smaller range inside it; `/32` describes one IPv4 address. In this project, `/32` operator allowlists constrain who can reach the public EKS API endpoint. Avoid memorizing the numbers without understanding which traffic they constrain.
+
+### Worked example: safely changing node size
+
+Suppose the worker is too small. Editing `instance_type` expresses new intent; it does not resize a running pod or magically update AWS. Terraform plan compares configuration, recorded state and provider reads. Inspect whether the change updates or replaces the managed node group/launch resources. Review disruption, temporary overlapping capacity, quotas and cost. Apply approval authorizes that saved plan. After apply, verify node readiness and workload scheduling. A successful AWS operation alone does not prove the application recovered.
+
+Terraform state maps an address such as `module.eks.aws_eks_cluster.this` to an AWS object. It is neither a database backup nor a snapshot of all AWS resources. Git remembers configuration, state remembers ownership mappings, and database backups preserve business data. Recreating infrastructure from Git does not recover deleted orders.
+
+### Learn to distinguish the layers
+
+| Layer | Example failure | Evidence to inspect |
+|---|---|---|
+| Authentication | Expired MFA/role credentials | `aws sts get-caller-identity` |
+| AWS authorization | AccessDenied on CreateNodegroup | Caller role policies, boundary, denied API |
+| Network reachability | Kubernetes API connection times out | Endpoint CIDR allowlist, current public IP, connectivity |
+| Kubernetes authorization | Forbidden when listing pods | EKS access entry/policy and Kubernetes authorization |
+| Scheduling | Pod remains Pending | Pod events, node capacity, quota, volume topology |
+| Application dependency | Ready process cannot query DB | DB reachability, TLS, app credential and logs |
+
+Use sections 2.13–2.16 to learn the Terraform language and actual modules, then 2.19 for IAM evaluation. The setup chapters are operational procedures; do not run them merely to understand the concepts.
+
 
 ## 2.1 Architecture at a glance
 
@@ -186,15 +246,18 @@ Stop if Terraform proposes rewriting imported IAM objects; reconcile their exact
 Inspect the plan, especially public hosted zones, budgets, IAM, ECR and `prevent_destroy`. Apply only the saved, reviewed bootstrap plan with the approved scoped identity:
 
 ```bash
+# Imports changed state: generate a fresh plan, inspect it, then apply that file.
+terraform -chdir=infrastructure/bootstrap plan -var-file=../../.work/bootstrap.tfvars -out=../../.work/bootstrap.tfplan
+terraform -chdir=infrastructure/bootstrap show ../../.work/bootstrap.tfplan
 terraform -chdir=infrastructure/bootstrap apply ../../.work/bootstrap.tfplan
 terraform -chdir=infrastructure/bootstrap output
 ```
 
-After the state bucket exists, restore the backend configuration and migrate state. Keep the local state backup encrypted until remote state is verified; then securely remove local state copies. Do not commit any `.tfstate`, plan or vars file.
+After the state bucket exists, restore the backend configuration and migrate state. Migration is interactive here so you can inspect and confirm the destination; disabling input can prevent the confirmation. See the [Terraform init reference](https://developer.hashicorp.com/terraform/cli/commands/init). Keep the local state backup encrypted until remote state is verified; then securely remove local state copies. Do not commit any `.tfstate`, plan or vars file.
 
 ```bash
 mv .work/bootstrap-backend.tf infrastructure/bootstrap/backend.tf
-terraform -chdir=infrastructure/bootstrap init -migrate-state -input=false \
+terraform -chdir=infrastructure/bootstrap init -migrate-state -input=true \
   -backend-config='bucket=YOUR_STATE_BUCKET' \
   -backend-config='key=bootstrap/terraform.tfstate' \
   -backend-config='region=ap-south-1' \
@@ -338,7 +401,7 @@ Use `terraform state list` only with the correct initialized backend and profile
 
 `modules/network/main.tf` creates a `10.42.0.0/16` VPC with DNS support/hostnames, an Internet Gateway, two public subnets and two DB subnets. `cidrsubnet(vpc, 8, n)` borrows eight bits from the `/16`, creating `/24` subnets. The public subnets get indexes 0 and 1; DB subnets indexes 10 and 11. AZ order is an input contract: index 0 is the chosen worker/RDS AZ.
 
-The Internet Gateway is only attached to a route table; it does not make every subnet public by itself. The public route table has `0.0.0.0/0 → IGW` and is associated with the public subnets. The module does not create or explicitly associate separate database route tables; the DB subnets therefore use the VPC main route table, whose only configured route is the VPC-local route. There is no NAT Gateway. The Terraform provider default tags the VPC/subnets; Kubernetes subnet discovery tags `kubernetes.io/role/elb=1` tell the ALB controller these are public load-balancer subnets.
+The Internet Gateway attaches to the VPC and is referenced by a route; it does not make every subnet public by itself. The public route table has `0.0.0.0/0 → IGW` and is associated with the public subnets. The module does not create or explicitly associate separate database route tables; the DB subnets therefore use the VPC main route table, whose only configured route is the VPC-local route. There is no NAT Gateway. The Terraform provider default tags the VPC/subnets; Kubernetes subnet discovery tags `kubernetes.io/role/elb=1` tell the ALB controller these are public load-balancer subnets.
 
 Packet examples:
 
@@ -524,3 +587,85 @@ Terraform's native `terraform test` files use `mock_provider`/`mock_resource` so
 These tests are executable policy documentation. Read each `assert` as a sentence: it encodes a security invariant that a refactor must preserve. When an assertion fails, determine whether the intended design changed or the implementation regressed; do not delete an assertion merely to make CI green.
 
 The separate `terraform validate` checks configuration/provider schema. `terraform fmt -check` checks formatting. `terraform plan` queries a live account and compares it with state. A mocked test can pass while the live AWS call is denied; a plan may pass while apply later fails due to a service condition. They test different layers and all are useful.
+
+## Guided simulation: provision, recover and account for resources
+
+**These are teaching scenarios, not live AWS findings.** They can be completed without provisioning. Predict each next step before reading the answer.
+
+### Situation 1: a plan unexpectedly replaces the database
+
+You intended to enlarge a worker, but the plan includes:
+
+```text
+Illustrative plan summary:
+  managed worker configuration: change
+  database: replacement required
+  application runtime secret: change
+```
+
+**Your decision:** approve because the change request mentioned capacity?
+
+**Answer:** stop the apply review. Locate the exact database attribute marked as forcing replacement. Compare the planned inputs with the intended change, including snapshot identifier, database identity and module addresses. A module refactor without the correct moved-address mapping can also look like deletion/recreation. Determine the actual cause from the plan; never assume it is harmless merely because the database contents are absent from the diff.
+
+**Why:** Terraform preserves the desired infrastructure configuration, not your business records. Database replacement can require restore/migration, downtime and extra temporary capacity. The current session configuration skips a final snapshot on destroy. Review backups and data migration explicitly before approving such a plan.
+
+**Verification before approval:** the regenerated plan matches the intended worker-only change, or the expanded DB change has an approved recovery/migration procedure. After changing configuration or state, generate a fresh saved plan. Approval must correspond to that file and source revision.
+
+### Situation 2: AWS login works but Kubernetes access fails
+
+Illustrative observations:
+
+```text
+sts get-caller-identity: expected account and operator role
+eks describe-cluster: ACTIVE
+kubectl get nodes: Unauthorized
+```
+
+**Your decision:** create a new AWS access key or open the EKS endpoint to the whole internet?
+
+**Answer:** neither addresses the observed authorization failure. The caller has an AWS identity and can describe the cluster. Check the kubeconfig's cluster endpoint and AWS profile, then compare the persistent IAM role ARN with the EKS access entry and associated policy. An STS session ARN is not the persistent role ARN the Terraform input expects. The principal used in the browser console may also differ from the terminal role.
+
+If the error were instead a connection timeout, investigate endpoint reachability, operator public IP and the `/32` allowlist first. If it were `Forbidden` naming a Kubernetes resource/action, investigate Kubernetes authorization for that action. Error classification prevents random changes to unrelated layers.
+
+### Situation 3: destroy fails after deleting most infrastructure
+
+Illustrative log:
+
+```text
+EKS: destroyed
+RDS: destroyed
+VPC: destroyed
+IAM role cleanup: AccessDenied for iam:ListInstanceProfilesForRole
+Workflow result: FAILURE
+```
+
+**Your decision:** does FAILURE imply AWS rolled everything back?
+
+**Answer:** no. Terraform applies a sequence of provider operations; a later failure does not undo successful deletions. Consult updated state, exact error and AWS inventory. The denied list operation may be a prerequisite the provider performs before deleting an IAM role. A narrowly scoped permission update can be appropriate, but it must come through the owner of that policy. The apply role should not grant itself new privileges.
+
+**Recovery:** bring the approved IAM policy into effect, obtain fresh credentials if required, then generate and review a new destroy plan against updated state. Do not reuse the earlier saved plan. Inventory remaining resources independently, including controller-owned ALBs, volumes, interfaces, snapshots and retained foundation objects. Permission-denied inventory checks mean “unknown,” not “absent.”
+
+### Situation 4: recreate the infrastructure tomorrow
+
+The desired configuration remains in Git, Terraform backend state remains in S3, and ECR retains the application images. The database was deleted and no usable backup exists.
+
+**Predict what returns:** infrastructure can be provisioned again; image references can be reused if still present and compatible; platform controllers can be installed from reviewed configuration. **What does not return:** deleted users/orders, deleted monitoring history or other data without a backup.
+
+New resources can receive new identifiers. Generate environment/controller values from current Terraform outputs and review a PR updating old secret ARNs/VPC identifiers. Reusing last session's values can leave Argo pointing at deleted dependencies. Check the restore source separately from the infrastructure configuration.
+
+### Build the ownership ledger on paper
+
+| Object | Desired-state owner | Runtime creator | Teardown evidence |
+|---|---|---|---|
+| VPC/EKS/RDS | Session Terraform | AWS providers/services | Fresh state/plan and AWS resource queries |
+| Application pods | Git/Argo + Kubernetes | Kubernetes controllers | Namespace/workload inspection |
+| ALB and target groups | Git Ingress + ALB controller | AWS Load Balancer Controller | Ingress gone and AWS load balancer/target group inventory |
+| PVC disks | Git/PVC/StorageClass + CSI | EBS CSI | PVC cleanup plus EBS inventory |
+| State bucket/ECR/DNS foundation | Bootstrap Terraform | AWS providers | Intentionally retained inventory and cost review |
+| Manual recovery snapshot | Explicit backup runbook/operator | RDS snapshot operation | Snapshot ID, owner, retention and deletion decision |
+
+A resource not directly listed in Terraform state can still be deliberately controller-managed. Track its owner and cleanup mechanism. A manual backup must also appear in your ledger even if Terraform did not create it.
+
+### Reader deliverable
+
+Prepare a session plan with: expected account/region; source commit; proposed creates/updates/deletes; budget observation method; backup decision; resource owners; expected teardown leftovers; and next-day reconstruction steps. Explain why each item is needed. This demonstrates planning skill before spending money.

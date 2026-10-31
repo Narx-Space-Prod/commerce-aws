@@ -1,6 +1,56 @@
 # 1. CI/CD handbook: from a code change to a reviewed release
 
+## Contents
+
+- [Start here: what are we trying to automate?](#start-here-what-are-we-trying-to-automate)
+- [1.1 The mental model](#11-the-mental-model)
+- [1.2 Developer workflow](#12-developer-workflow)
+- [1.3 What the CI workflow checks](#13-what-the-ci-workflow-checks)
+- [1.4 One image build, publication and provenance](#14-one-image-build-publication-and-provenance)
+- [1.5 Infrastructure pipeline is a separate control plane](#15-infrastructure-pipeline-is-a-separate-control-plane)
+- [1.6 GitHub Actions configuration inventory](#16-github-actions-configuration-inventory)
+- [1.7 How to inspect and troubleshoot a run](#17-how-to-inspect-and-troubleshoot-a-run)
+- [1.8 Learn by following source](#18-learn-by-following-source)
+- [1.9 Production ideas demonstrated—and limits](#19-production-ideas-demonstratedand-limits)
+- [1.10 Trace a real change through the code](#110-trace-a-real-change-through-the-code)
+- [1.11 Read the workflow YAML from top to bottom](#111-read-the-workflow-yaml-from-top-to-bottom)
+- [1.12 Dockerfile stages: tests become a build dependency](#112-dockerfile-stages-tests-become-a-build-dependency)
+- [1.13 Every helper script and why it exists](#113-every-helper-script-and-why-it-exists)
+- [1.14 How to learn a failing run instead of guessing](#114-how-to-learn-a-failing-run-instead-of-guessing)
+- [1.15 Hands-on CI exercises](#115-hands-on-ci-exercises)
+- [1.16 CI/CD vocabulary checkpoint](#116-cicd-vocabulary-checkpoint)
+- [1.17 Workflow configuration: required settings and who owns them](#117-workflow-configuration-required-settings-and-who-owns-them)
+- [1.18 What this pipeline does not guarantee](#118-what-this-pipeline-does-not-guarantee)
+- [1.19 Reproduce the main checks locally](#119-reproduce-the-main-checks-locally)
+- [Guided simulation: change, release and rollback](#guided-simulation-change-release-and-rollback)
+
 This chapter follows one developer change all the way through the repository. It assumes no prior CI/CD knowledge, then maps each concept to the workflow and helper code that implements it.
+
+## Start here: what are we trying to automate?
+
+Imagine changing the checkout page. Your laptop can display the change, but another developer's laptop may have different dependencies. The server might still run yesterday's image. A manual deployment might copy half the files before failing. CI/CD makes the steps explicit and repeatable: identify the source, validate it, package it, record evidence, authorize a release, then observe its behavior.
+
+A Git **commit** identifies a source snapshot. A branch is a movable pointer to commits. A pull request asks reviewers to merge a branch into another branch; it is not itself a deployment. An image **digest** identifies a packaged artifact. A deployment commit selects which artifact Kubernetes should run. Keep these identifiers separate when debugging.
+
+### Worked example: three identifiers for one change
+
+Suppose source commit `A` changes frontend code. CI builds image digest `D` from `A`. The release bot creates commit `B`, which changes `deploy/release.json` to reference `D`. Argo observes `B` and deploys `D`. The running image should match `D`; it should not be compared directly to `B` as though the Git commit and image digest were interchangeable.
+
+| Evidence | Question it answers | Where to look |
+|---|---|---|
+| Source SHA `A` | Which application code was built? | Workflow run and publisher record |
+| Image digest `D` | Which exact packaged artifact was released? | ECR and `deploy/release.json` |
+| Deployment SHA `B` | Who reviewed the desired-state change? | Release PR and Argo revision |
+| Ready pods + runtime signals | Does that release operate correctly? | Kubernetes, metrics and customer checks |
+
+If the browser shows old UI, walk this chain in order. If `D` never changed, cache-clearing cannot deploy missing code. If desired `D` changed but pods run another image, inspect Argo/rollout. If pods run `D`, then examine routing and browser/CDN caching. Each hypothesis needs evidence.
+
+### Build, release, deploy: three separate responsibilities
+
+A build transforms source into an artifact. A release selects an artifact and its configuration. A deployment makes the selected release run somewhere. The same artifact may be deployed repeatedly without rebuilding. A configuration-only change may require deployment without changing app source. Terraform provisioning is a fourth operation: it supplies the cluster/network/data resources on which the app depends.
+
+The repository's complete learning path is: understand this distinction; trace section 1.10; read the Dockerfile stages in 1.12; study helpers in 1.13; reproduce selected local checks in 1.19. Read the AWS handbook before enabling cloud jobs.
+
 
 ## 1.1 The mental model
 
@@ -323,3 +373,67 @@ docker inspect commerce-check/frontend:local --format '{{.Config.User}}'
 ```
 
 The image build invokes its Dockerfile tests. A local Docker engine may use a different architecture/cache than GitHub's `ubuntu-24.04` runner, and Trivy database freshness can differ. CI results remain the merge gate.
+
+## Guided simulation: change, release and rollback
+
+**This is a fictional worked exercise using this repository's design. All observations below are illustrative, not captured run results.** You can complete the reasoning on paper without GitHub or AWS access. Read each evidence panel, write your next action, then compare with the answer. The exercise assumes the previously disabled infrastructure/application prerequisites have deliberately been completed.
+
+### Situation 1: the UI change passed CI but customers see the old page
+
+A developer changes `application/frontend/public/`. The source PR is merged. You receive this evidence:
+
+```text
+Main CI run: Configuration checks SUCCESS
+Frontend build/test/scan: SUCCESS
+Publish exact tested image: SKIPPED
+Propose deployment: SKIPPED
+Repository variable DELIVERY_ENABLED: false
+deploy/release.json frontend: previous digest
+```
+
+**Your decision:** should you clear the browser cache, rebuild all services, manually restart pods, or investigate delivery enablement?
+
+**Answer and reasoning:** the desired image never changed. Build success proves a local image passed the configured build checks; skipped publication means no new published release record exists. Restarting pods would reload the previous desired digest. Investigate why delivery was disabled and whether registry credentials, release App and environment protections are ready. Disabling delivery is intentional in this lab after teardown; do not enable it simply to make a job green.
+
+**Expected progression after authorized activation:** main build publishes a digest, signs/attests it, emits a release record, and the bot opens a release PR. Review that PR's source and digest before merging. A feature-only change should update the frontend entry while preserving unaffected image entries. Argo should then observe the deployment commit and update the frontend Deployment. Only after establishing this chain should you investigate browser caching.
+
+### Situation 2: a deployment PR contains an unexpected image
+
+Illustrative diff:
+
+```diff
+- "frontend": "ACCOUNT.dkr.ecr.ap-south-1.amazonaws.com/commerce-aws/frontend@sha256:OLD"
++ "frontend": "someone-else/frontend:latest"
+```
+
+`OLD` above is an explanatory placeholder, not a valid digest. The actual release validator requires 64 hexadecimal digest characters.
+
+**Your decision:** approve because the source PR was already approved?
+
+**Answer:** reject the proposed release until its provenance is corrected. Source review and artifact selection answer different questions. `scripts/release.py` should reject a foreign registry/mutable tag; the Helm template has a second digest-format guard. If either guard unexpectedly accepts this input, investigate the validator and the workflow version used. Do not weaken validation to accept the image.
+
+**What you should be able to explain:** source SHA identifies code; image digest identifies the packaged artifact; deployment commit identifies the reviewed desired state. None alone proves that the other two are correct.
+
+### Situation 3: a legitimate release causes checkout errors
+
+Illustrative observations:
+
+```text
+Argo: Synced, Healthy
+Frontend pod image: new reviewed digest
+HTTP 5xx alert: firing after release
+Previous release: healthy before the change
+Database: available
+```
+
+**Your decision:** does Healthy mean the release cannot be responsible?
+
+**Answer:** no. Kubernetes/Argo health checks cover their configured readiness and resource conditions. A particular customer route can fail while the process remains ready. Correlate the first failures with deployment time, inspect the frontend logs for the failing route and compare changed configuration. Treat correlation as a lead, not proof: an upstream dependency may have failed at the same time.
+
+**Mitigation:** if evidence implicates the release and its prior version remains compatible, restore the previously known-good frontend digest through a reviewed Git change. Check the entire release diff: preserve unrelated component updates. A database schema change can make an old app version incompatible, so check migration compatibility before choosing rollback. This repo has no automatic analysis-driven rollback; do not wait for one.
+
+**Verification:** confirm Argo observes the rollback commit, the Deployment uses the intended old digest, replacement pods become ready, the failing synthetic checkout succeeds, and error rate recovers over an observation window. A merged rollback PR alone is not recovery evidence.
+
+### Reader deliverable
+
+Write a six-line incident note: customer symptom; source/deployment/digest identifiers; first failed stage or runtime signal; evidence supporting the cause; mitigation; recovery evidence. If you cannot fill a field, state what you would inspect next. This is the same reasoning structure you should use during a real incident.

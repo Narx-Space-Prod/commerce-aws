@@ -1,6 +1,56 @@
 # 4. Integrations handbook: monitoring, messaging, secrets and operations
 
+## Contents
+
+- [Start here: knowing whether a system works](#start-here-knowing-whether-a-system-works)
+- [4.1 Monitoring: metrics, dashboards and alerts](#41-monitoring-metrics-dashboards-and-alerts)
+- [4.2 AWS-side alerts are a separate route](#42-aws-side-alerts-are-a-separate-route)
+- [4.3 Asynchronous order messaging: transactional outbox + SQS](#43-asynchronous-order-messaging-transactional-outbox--sqs)
+- [4.4 Secrets Manager, Pod Identity and External Secrets](#44-secrets-manager-pod-identity-and-external-secrets)
+- [4.5 DNS, TLS and ingress](#45-dns-tls-and-ingress)
+- [4.6 Database recovery and safe diagnostics](#46-database-recovery-and-safe-diagnostics)
+- [4.7 Runbook: diagnose a customer-impacting failure](#47-runbook-diagnose-a-customer-impacting-failure)
+- [4.8 Learning exercises and interview explanations](#48-learning-exercises-and-interview-explanations)
+- [4.9 Monitoring source walkthrough: from request to Slack](#49-monitoring-source-walkthrough-from-request-to-slack)
+- [4.10 CloudWatch alarms: exact math and notification handshake](#410-cloudwatch-alarms-exact-math-and-notification-handshake)
+- [4.11 Queue and application consistency concepts](#411-queue-and-application-consistency-concepts)
+- [4.12 External Secrets data path, field by field](#412-external-secrets-data-path-field-by-field)
+- [4.13 DNS, certificate and ALB handshake](#413-dns-certificate-and-alb-handshake)
+- [4.14 Python helpers from an operator's point of view](#414-python-helpers-from-an-operators-point-of-view)
+- [4.15 Learn operations through small failure drills](#415-learn-operations-through-small-failure-drills)
+- [Guided simulation: alerts, messages and recovery evidence](#guided-simulation-alerts-messages-and-recovery-evidence)
+
 This chapter connects the services around the application. It teaches what each integration does, where its configuration lives, how data/credentials flow, and how to investigate failures without exposing secrets.
+
+## Start here: knowing whether a system works
+
+A green deployment tells you that a controller reached a state. Customers care about outcomes: can they open the shop, complete a test checkout, and see the resulting order? Operations connects infrastructure signals to those outcomes.
+
+**Metrics** summarize measurements over time. **Logs** describe discrete events. **Traces** follow an individual request across services. This repository provides metrics, local/container logs and selected AWS control-plane logs; it does not configure a distributed tracing platform or a central application-log archive. Understanding those gaps is part of understanding the architecture.
+
+### Four useful service questions
+
+- How many requests arrive? That is traffic or throughput.
+- How long do they take? That is latency; examine slow percentiles, not just an average.
+- How many fail? That is error rate, classified by symptom and service.
+- How close are resources to exhaustion? That is saturation: CPU, memory, connections, queue backlog and disk space.
+
+A counter only increases until a process restarts; use a rate over a time window to interpret requests per second. A gauge can increase or decrease, such as current queue depth. A histogram groups observations into buckets and can support latency percentile estimates. Labels split a metric into series; using order IDs or emails as labels can produce unbounded series and expose customer details. Prefer bounded labels such as component and status class.
+
+### Worked example: a slow receipt worker
+
+Checkout writes an order and outbox event. The publisher delivers the event to SQS. A slow worker lets queue age grow. The HTTP API might still be healthy, so an uptime-only check misses delayed receipts. Queue-age metrics expose the delay; CloudWatch routes an alarm to SNS. If the publisher instead fails before SQS, outbox age grows and Prometheus should detect it. These signals distinguish two different failure locations.
+
+An alert needs an owner, a symptom, an actionable investigation path and a recovery signal. A dashboard does not page anyone. A rule that is loaded does not prove the notification reached a human. A successful notification does not prove every important failure has a rule. Test the full chain deliberately in a disposable environment.
+
+### Reliability and recovery vocabulary
+
+An **SLI** is a measurement such as successful checkout fraction. An **SLO** is an agreed target over a time window. An **error budget** is the tolerated amount of failure under that target. This repository does not define a complete business SLO/error-budget policy; the concepts help you judge whether infrastructure alerts reflect customer experience.
+
+**RPO** describes how much data loss is acceptable; **RTO** describes how long recovery may take. A snapshot existing does not establish either. Measure a restore using known synthetic data, record the snapshot timestamp and recovery duration, then compare with the target. An infrastructure destroy followed by recreation cannot restore business data unless a usable backup exists.
+
+Use section 4.9 for the metric-to-alert chain, 4.11 for message delivery semantics, 4.12 for secrets, and 4.15 for controlled drills. Record expected and observed outcomes separately so the documentation never presents an unperformed exercise as proven recovery.
+
 
 ## 4.1 Monitoring: metrics, dashboards and alerts
 
@@ -22,7 +72,7 @@ kubectl --context commerce-aws -n monitoring port-forward svc/PLATFORM_GRAFANA_S
 kubectl --context commerce-aws -n monitoring get pods
 ```
 
-Grafana credentials are seeded from a local prompt by `scripts/seed_secret.py grafana`; the secret is not checked into Git. Avoid commands that print Secret YAML or values. If login fails, check the correct context/namespace/secret existence and pod events without displaying the password.
+A random Grafana admin password is generated by `scripts/seed_secret.py grafana`; the secret is not checked into Git. Avoid commands that print Secret YAML or values. If login fails, check the correct context/namespace/secret existence and pod events without displaying the password.
 
 ### Alert routing
 
@@ -61,9 +111,11 @@ The app handles order receipt work asynchronously:
 Inspect queue metadata without reading message bodies:
 
 ```bash
-aws sqs get-queue-attributes --queue-url QUEUE_URL --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible ApproximateNumberOfMessagesVisible --region ap-south-1
+aws sqs get-queue-attributes --queue-url QUEUE_URL --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible ApproximateNumberOfMessagesDelayed --region ap-south-1
 aws cloudwatch describe-alarms --alarm-name-prefix commerce-aws --region ap-south-1
 ```
+
+The SQS API calls available-message count `ApproximateNumberOfMessages`; CloudWatch uses `ApproximateNumberOfMessagesVisible`. Do not interchange API attribute names and CloudWatch metric names. See the [AWS CLI queue attribute reference](https://docs.aws.amazon.com/cli/latest/reference/sqs/get-queue-attributes.html).
 
 A controlled DLQ exercise should use a non-customer test order, record the message ID/count, identify the failure, fix the consumer, redrive under a reviewed runbook, and confirm idempotency. Do not purge queues as a generic troubleshooting step.
 
@@ -80,8 +132,8 @@ The secrets role can read only the runtime secret and RDS-generated master secre
 Troubleshoot without disclosing values:
 
 ```bash
-kubectl --context commerce-aws -n external-secrets get secretstore,externalsecret
-kubectl --context commerce-aws -n external-secrets describe externalsecret NAME
+kubectl --context commerce-aws -n commerce get secretstore,externalsecret
+kubectl --context commerce-aws -n commerce describe externalsecret NAME
 kubectl --context commerce-aws -n external-secrets logs deploy/external-secrets --tail=100
 kubectl --context commerce-aws -n commerce get secret
 kubectl --context commerce-aws -n commerce describe pod POD_NAME
@@ -235,3 +287,71 @@ Run these only in a recreated disposable environment and use synthetic data:
 6. **Backup:** create a manual snapshot, wait for availability, restore into isolated capacity, verify a known synthetic order, and record elapsed recovery time and data-loss window.
 
 Every drill has four parts: change one failure condition, identify which signal detects it, restore service through the owning control plane, then document the evidence. Do not claim a drill happened just because an alert or backup resource exists.
+
+## Guided simulation: alerts, messages and recovery evidence
+
+**These are fictional case studies. No message, alert or restore described here has been executed by writing this guide.** Pause at each decision and explain it before reading the answer.
+
+### Case 1: order is saved but no receipt appears
+
+Evidence:
+
+```text
+Orders API: requests succeed
+Outbox oldest age: increasing
+Paid SQS queue: no new messages
+Publisher logs: AccessDenied on SendMessage
+Worker: healthy
+```
+
+The event has not reached SQS. Restarting the worker or redriving the DLQ cannot recover an event that never entered the queue. Inspect publisher ServiceAccount, Pod Identity association, queue ARN/URL and the role's `sqs:SendMessage` permission/boundary. A healthy API does not imply the asynchronous path works.
+
+After the scoped identity/configuration fix, the publisher should drain existing outbox work without requiring customers to place duplicate orders. Observe falling outbox age, messages reaching the queue, worker processing and the original order's receipt. A quiet alert alone is insufficient if metrics disappeared.
+
+### Case 2: a message is delivered twice
+
+The worker writes its receipt to the database, then crashes before acknowledging SQS. When visibility expires, the same event is delivered again.
+
+**Predict the result:** an idempotent worker recognizes the event's stored processing key and avoids a second business side effect. It can acknowledge the duplicate after confirming the prior committed outcome. Without that check, a duplicate delivery could create duplicate receipts or other effects. SQS visibility timeout reduces simultaneous processing; it does not guarantee exactly-once execution.
+
+The safe recovery question is “has this event's effect already committed?” Do not purge the queue to hide duplicates. Inspect event identifiers in appropriately restricted logs/data and preserve the relationship between source order, outbox event and receipt. Avoid publishing personal data to an alert channel.
+
+### Case 3: the alert fires but Slack stays quiet
+
+Evidence:
+
+```text
+Prometheus rule: firing
+Alertmanager: receives alert
+Alert labels: severity=info
+Configured Slack route: severity warning or critical
+Default receiver: null
+```
+
+The system is behaving according to its route. Rotating the webhook will not make `info` match a warning/critical route. Decide whether this condition deserves notification and adjust the rule/route under review. If severity already matched and delivery logs showed a webhook rejection, investigate the private webhook configuration instead.
+
+Verify the whole chain: rule has data, expression becomes true for its configured duration, Alertmanager receives the alert, routing selects Slack, delivery succeeds, and a resolution notification arrives after recovery. Distinguish a silence, inhibition, grouping delay and delivery error; all can make a firing alert appear quiet for different reasons.
+
+### Case 4: demonstrate a backup can restore useful data
+
+Choose a synthetic order with a recorded timestamp and known expected status. Establish a backup time, restore into an isolated authorized target, connect the app/test client using that target's generated settings, and verify the record. Also verify a write/read operation and application schema compatibility; a DB status of `available` only establishes service readiness.
+
+**Illustrative calculation:** a snapshot represents data at 14:00; failure occurs at 14:10; service is usable at 14:35 after restoration. Up to ten minutes of writes may be missing under this snapshot-only recovery, and measured recovery duration is 25 minutes from the declared incident start. These are illustrative observed outcomes, not agreed RPO/RTO targets. Compare them with requirements and record any missing data. A point-in-time restore capability can change the recovery choices, but it must be configured, retained and authorized.
+
+Record snapshot identifier, source/target ownership, creation and recovery timestamps, verification queries without secret values, and cleanup decision for the temporary restore. A restore exercise can otherwise leave an expensive second database behind.
+
+### Reader deliverable: explain a complete incident
+
+Use this format with one of the cases:
+
+```text
+Impact: what could the customer not do?
+Detection: which signal first showed it, and when?
+Evidence: what observations support the suspected failing layer?
+Alternative: what other explanation did you rule out, and how?
+Mitigation: which reviewed change restored service?
+Verification: which customer outcome and technical signals recovered?
+Follow-up: what would prevent recurrence or shorten diagnosis?
+```
+
+Do not write “everything healthy” without naming the checks. Do not turn a plausible explanation into a confirmed cause without evidence. This discipline is as important as knowing the tools.
