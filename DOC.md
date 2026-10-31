@@ -43,3 +43,18 @@ Read each handbook's “Start here” chapter before its runbook. Keep the refer
 For a hands-on exercise, record four things: your prediction, the command or reviewed change, the observed result, and your explanation if it differed. Keep synthetic exercise evidence private when it includes account metadata. Live AWS exercises require a deliberately provisioned session; reading, inspecting source and rendering examples can be done without creating cloud resources.
 
 Completing these guides builds a strong foundation. Operational expertise also requires practicing diagnosis, recovery, review and communication over time. The documents label what is implemented, what remains to be configured and what has not been tested, so you can describe your experience accurately.
+
+## Practise the decisions while reading
+
+Each handbook now ends with a **Guided simulation**. These are fictional scenarios with illustrative evidence and worked answers; they are not claims that a live deployment, incident or restore occurred.
+
+Follow this sequence to practise the skills without provisioning AWS:
+
+1. Read the CI simulation and trace source → build → release → running image. Diagnose the old UI and choose a compatible rollback.
+2. Read the AWS simulation and review an unexpected database replacement, classify an access failure, recover from partial teardown and plan recreation.
+3. Read the Argo simulation and identify where a rollout stops: scheduling, secret readiness or desired-state reconciliation.
+4. Read the integrations simulation and follow failed event publication, duplicate delivery, alert routing and backup verification.
+
+Before reading an answer, write your next action and the evidence you expect it to produce. Compare your reasoning with the explanation. If your action would change a different layer from the one the evidence implicates, revisit the concept chapter. Finish by writing the incident note or ownership ledger requested at the end of the scenario.
+
+This provides detailed rehearsal of operational reasoning within the document. Later hands-on practice establishes whether you can execute those decisions against a real system, including unexpected errors and time pressure.

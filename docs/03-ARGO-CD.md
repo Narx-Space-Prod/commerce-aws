@@ -17,6 +17,7 @@
 - [3.12 Render locally and understand the output](#312-render-locally-and-understand-the-output)
 - [3.13 Interpret Argo status precisely](#313-interpret-argo-status-precisely)
 - [3.14 Safe hands-on Argo practice](#314-safe-hands-on-argo-practice)
+- [Guided simulation: investigate a stalled rollout](#guided-simulation-investigate-a-stalled-rollout)
 
 Argo CD is the Kubernetes delivery controller in this project. This guide explains what it watches, which YAML files define it, how the first controller is installed, and how to operate and remove it safely.
 
@@ -350,3 +351,63 @@ When a disposable cluster is active:
 5. Manually change a noncritical managed label in a disposable namespace; observe self-heal. Do not edit IAM/Ingress/production resources as a drift demo.
 6. Change a chart value in Git and observe auto-sync. Restore it with another commit to practice Git-based rollback.
 7. Inspect PVCs and controller-created AWS resources before teardown. Run ordered cleanup only on the disposable cluster, then inventory cloud leftovers.
+
+## Guided simulation: investigate a stalled rollout
+
+**All output below is illustrative. Do not run destructive experiments against an unrelated cluster.** The scenario assumes a running project cluster and enabled commerce chart.
+
+### Evidence round 1
+
+```text
+Argo commerce: Synced / Progressing
+Frontend Deployment: desired 1, ready 1, updated 0
+Old frontend pod: Running / Ready
+New frontend pod: Pending
+```
+
+**Predict the next observation:** inspect the new pod's events with `kubectl --context commerce-aws -n commerce describe pod POD_NAME`. Do not delete the healthy old pod merely because the update is slow.
+
+Suppose the event says:
+
+```text
+FailedScheduling: insufficient memory
+```
+
+**Explanation:** the rollout requests one surge pod and allows zero unavailable replicas. Keeping the old ready pod preserves traffic, but the node must fit both pods temporarily. Memory requests drive scheduling. The container memory limit is not a reservation of node capacity. A namespace quota could independently block admission; distinguish `exceeded quota` from scheduler `insufficient memory`.
+
+**Fix choices:** use measured evidence to right-size requests if they are unnecessarily high, or add reviewed worker capacity for the rollout. Both are Git/Terraform-owned changes in this project. Reducing availability requirements trades capacity for interruption and needs a deliberate decision. Raising HPA's replica maximum does not create node memory.
+
+**Recovery evidence:** the replacement becomes Running and Ready; the Deployment reports updated/available replicas; old replicas terminate; Argo becomes Healthy; app metrics and a synthetic request remain healthy.
+
+### Evidence round 2: the pod starts but never becomes ready
+
+New illustrative evidence:
+
+```text
+Pod: Running, Ready=False
+Container restarts: 0
+Readiness probe: HTTP 503
+ExternalSecret commerce-runtime: provider access error
+```
+
+The process is running, so repeating image pulls or increasing scheduling capacity does not address this failure. Inspect ExternalSecret conditions in namespace `commerce`, then operator logs in namespace `external-secrets`. Check current secret ARN, account/region, Pod Identity association and IAM authorization. The operator's location and the custom resource's namespace are different.
+
+If the secret never materialized, a container may instead show a configuration/startup error because its Secret key cannot be found. If the Secret exists but references a previous database, the process may run and fail readiness. Use the actual events/logs to select the branch of diagnosis; these outcomes are not interchangeable.
+
+### Evidence round 3: someone manually fixes the live Deployment
+
+An operator edits the live Deployment image. It works briefly, then returns to the Git-selected image.
+
+**Explanation:** Argo self-heal sees the manual image as drift and reconciles Git. The durable fix is a reviewed desired-state change. During an emergency, any temporary controller suspension/manual action must be deliberate and recorded, followed by reconciliation of Git before normal automation resumes. Repeatedly fighting the controller makes the incident harder to understand.
+
+### Reader deliverable
+
+Draw this dependency chain and annotate where each failure can stop progress:
+
+```text
+Git revision → Helm render → Kubernetes admission → scheduling
+→ image pull → container start → startup/readiness → Service endpoints
+→ ALB target health → customer request
+```
+
+For each arrow, name one piece of evidence. Example: image pull failures appear in pod events; readiness governs eligible service endpoints; an ALB target-health problem can persist even when a pod is Ready. A successful earlier step does not establish the later ones.

@@ -22,6 +22,7 @@
 - [1.17 Workflow configuration: required settings and who owns them](#117-workflow-configuration-required-settings-and-who-owns-them)
 - [1.18 What this pipeline does not guarantee](#118-what-this-pipeline-does-not-guarantee)
 - [1.19 Reproduce the main checks locally](#119-reproduce-the-main-checks-locally)
+- [Guided simulation: change, release and rollback](#guided-simulation-change-release-and-rollback)
 
 This chapter follows one developer change all the way through the repository. It assumes no prior CI/CD knowledge, then maps each concept to the workflow and helper code that implements it.
 
@@ -372,3 +373,67 @@ docker inspect commerce-check/frontend:local --format '{{.Config.User}}'
 ```
 
 The image build invokes its Dockerfile tests. A local Docker engine may use a different architecture/cache than GitHub's `ubuntu-24.04` runner, and Trivy database freshness can differ. CI results remain the merge gate.
+
+## Guided simulation: change, release and rollback
+
+**This is a fictional worked exercise using this repository's design. All observations below are illustrative, not captured run results.** You can complete the reasoning on paper without GitHub or AWS access. Read each evidence panel, write your next action, then compare with the answer. The exercise assumes the previously disabled infrastructure/application prerequisites have deliberately been completed.
+
+### Situation 1: the UI change passed CI but customers see the old page
+
+A developer changes `application/frontend/public/`. The source PR is merged. You receive this evidence:
+
+```text
+Main CI run: Configuration checks SUCCESS
+Frontend build/test/scan: SUCCESS
+Publish exact tested image: SKIPPED
+Propose deployment: SKIPPED
+Repository variable DELIVERY_ENABLED: false
+deploy/release.json frontend: previous digest
+```
+
+**Your decision:** should you clear the browser cache, rebuild all services, manually restart pods, or investigate delivery enablement?
+
+**Answer and reasoning:** the desired image never changed. Build success proves a local image passed the configured build checks; skipped publication means no new published release record exists. Restarting pods would reload the previous desired digest. Investigate why delivery was disabled and whether registry credentials, release App and environment protections are ready. Disabling delivery is intentional in this lab after teardown; do not enable it simply to make a job green.
+
+**Expected progression after authorized activation:** main build publishes a digest, signs/attests it, emits a release record, and the bot opens a release PR. Review that PR's source and digest before merging. A feature-only change should update the frontend entry while preserving unaffected image entries. Argo should then observe the deployment commit and update the frontend Deployment. Only after establishing this chain should you investigate browser caching.
+
+### Situation 2: a deployment PR contains an unexpected image
+
+Illustrative diff:
+
+```diff
+- "frontend": "ACCOUNT.dkr.ecr.ap-south-1.amazonaws.com/commerce-aws/frontend@sha256:OLD"
++ "frontend": "someone-else/frontend:latest"
+```
+
+`OLD` above is an explanatory placeholder, not a valid digest. The actual release validator requires 64 hexadecimal digest characters.
+
+**Your decision:** approve because the source PR was already approved?
+
+**Answer:** reject the proposed release until its provenance is corrected. Source review and artifact selection answer different questions. `scripts/release.py` should reject a foreign registry/mutable tag; the Helm template has a second digest-format guard. If either guard unexpectedly accepts this input, investigate the validator and the workflow version used. Do not weaken validation to accept the image.
+
+**What you should be able to explain:** source SHA identifies code; image digest identifies the packaged artifact; deployment commit identifies the reviewed desired state. None alone proves that the other two are correct.
+
+### Situation 3: a legitimate release causes checkout errors
+
+Illustrative observations:
+
+```text
+Argo: Synced, Healthy
+Frontend pod image: new reviewed digest
+HTTP 5xx alert: firing after release
+Previous release: healthy before the change
+Database: available
+```
+
+**Your decision:** does Healthy mean the release cannot be responsible?
+
+**Answer:** no. Kubernetes/Argo health checks cover their configured readiness and resource conditions. A particular customer route can fail while the process remains ready. Correlate the first failures with deployment time, inspect the frontend logs for the failing route and compare changed configuration. Treat correlation as a lead, not proof: an upstream dependency may have failed at the same time.
+
+**Mitigation:** if evidence implicates the release and its prior version remains compatible, restore the previously known-good frontend digest through a reviewed Git change. Check the entire release diff: preserve unrelated component updates. A database schema change can make an old app version incompatible, so check migration compatibility before choosing rollback. This repo has no automatic analysis-driven rollback; do not wait for one.
+
+**Verification:** confirm Argo observes the rollback commit, the Deployment uses the intended old digest, replacement pods become ready, the failing synthetic checkout succeeds, and error rate recovers over an observation window. A merged rollback PR alone is not recovery evidence.
+
+### Reader deliverable
+
+Write a six-line incident note: customer symptom; source/deployment/digest identifiers; first failed stage or runtime signal; evidence supporting the cause; mitigation; recovery evidence. If you cannot fill a field, state what you would inspect next. This is the same reasoning structure you should use during a real incident.

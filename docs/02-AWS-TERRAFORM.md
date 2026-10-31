@@ -26,6 +26,7 @@
 - [2.21 Session Terraform code: inspect variables and outputs before a plan](#221-session-terraform-code-inspect-variables-and-outputs-before-a-plan)
 - [2.22 AWS console versus command-line evidence](#222-aws-console-versus-command-line-evidence)
 - [2.23 Terraform tests: what they prove and what they cannot](#223-terraform-tests-what-they-prove-and-what-they-cannot)
+- [Guided simulation: provision, recover and account for resources](#guided-simulation-provision-recover-and-account-for-resources)
 
 This is a guided tour of the AWS design encoded by the repository. Read it before enabling the infrastructure workflow. Cloud resources cost money, and Terraform can delete them; understand the identity, state and plan before using any mutating command.
 
@@ -586,3 +587,85 @@ Terraform's native `terraform test` files use `mock_provider`/`mock_resource` so
 These tests are executable policy documentation. Read each `assert` as a sentence: it encodes a security invariant that a refactor must preserve. When an assertion fails, determine whether the intended design changed or the implementation regressed; do not delete an assertion merely to make CI green.
 
 The separate `terraform validate` checks configuration/provider schema. `terraform fmt -check` checks formatting. `terraform plan` queries a live account and compares it with state. A mocked test can pass while the live AWS call is denied; a plan may pass while apply later fails due to a service condition. They test different layers and all are useful.
+
+## Guided simulation: provision, recover and account for resources
+
+**These are teaching scenarios, not live AWS findings.** They can be completed without provisioning. Predict each next step before reading the answer.
+
+### Situation 1: a plan unexpectedly replaces the database
+
+You intended to enlarge a worker, but the plan includes:
+
+```text
+Illustrative plan summary:
+  managed worker configuration: change
+  database: replacement required
+  application runtime secret: change
+```
+
+**Your decision:** approve because the change request mentioned capacity?
+
+**Answer:** stop the apply review. Locate the exact database attribute marked as forcing replacement. Compare the planned inputs with the intended change, including snapshot identifier, database identity and module addresses. A module refactor without the correct moved-address mapping can also look like deletion/recreation. Determine the actual cause from the plan; never assume it is harmless merely because the database contents are absent from the diff.
+
+**Why:** Terraform preserves the desired infrastructure configuration, not your business records. Database replacement can require restore/migration, downtime and extra temporary capacity. The current session configuration skips a final snapshot on destroy. Review backups and data migration explicitly before approving such a plan.
+
+**Verification before approval:** the regenerated plan matches the intended worker-only change, or the expanded DB change has an approved recovery/migration procedure. After changing configuration or state, generate a fresh saved plan. Approval must correspond to that file and source revision.
+
+### Situation 2: AWS login works but Kubernetes access fails
+
+Illustrative observations:
+
+```text
+sts get-caller-identity: expected account and operator role
+eks describe-cluster: ACTIVE
+kubectl get nodes: Unauthorized
+```
+
+**Your decision:** create a new AWS access key or open the EKS endpoint to the whole internet?
+
+**Answer:** neither addresses the observed authorization failure. The caller has an AWS identity and can describe the cluster. Check the kubeconfig's cluster endpoint and AWS profile, then compare the persistent IAM role ARN with the EKS access entry and associated policy. An STS session ARN is not the persistent role ARN the Terraform input expects. The principal used in the browser console may also differ from the terminal role.
+
+If the error were instead a connection timeout, investigate endpoint reachability, operator public IP and the `/32` allowlist first. If it were `Forbidden` naming a Kubernetes resource/action, investigate Kubernetes authorization for that action. Error classification prevents random changes to unrelated layers.
+
+### Situation 3: destroy fails after deleting most infrastructure
+
+Illustrative log:
+
+```text
+EKS: destroyed
+RDS: destroyed
+VPC: destroyed
+IAM role cleanup: AccessDenied for iam:ListInstanceProfilesForRole
+Workflow result: FAILURE
+```
+
+**Your decision:** does FAILURE imply AWS rolled everything back?
+
+**Answer:** no. Terraform applies a sequence of provider operations; a later failure does not undo successful deletions. Consult updated state, exact error and AWS inventory. The denied list operation may be a prerequisite the provider performs before deleting an IAM role. A narrowly scoped permission update can be appropriate, but it must come through the owner of that policy. The apply role should not grant itself new privileges.
+
+**Recovery:** bring the approved IAM policy into effect, obtain fresh credentials if required, then generate and review a new destroy plan against updated state. Do not reuse the earlier saved plan. Inventory remaining resources independently, including controller-owned ALBs, volumes, interfaces, snapshots and retained foundation objects. Permission-denied inventory checks mean “unknown,” not “absent.”
+
+### Situation 4: recreate the infrastructure tomorrow
+
+The desired configuration remains in Git, Terraform backend state remains in S3, and ECR retains the application images. The database was deleted and no usable backup exists.
+
+**Predict what returns:** infrastructure can be provisioned again; image references can be reused if still present and compatible; platform controllers can be installed from reviewed configuration. **What does not return:** deleted users/orders, deleted monitoring history or other data without a backup.
+
+New resources can receive new identifiers. Generate environment/controller values from current Terraform outputs and review a PR updating old secret ARNs/VPC identifiers. Reusing last session's values can leave Argo pointing at deleted dependencies. Check the restore source separately from the infrastructure configuration.
+
+### Build the ownership ledger on paper
+
+| Object | Desired-state owner | Runtime creator | Teardown evidence |
+|---|---|---|---|
+| VPC/EKS/RDS | Session Terraform | AWS providers/services | Fresh state/plan and AWS resource queries |
+| Application pods | Git/Argo + Kubernetes | Kubernetes controllers | Namespace/workload inspection |
+| ALB and target groups | Git Ingress + ALB controller | AWS Load Balancer Controller | Ingress gone and AWS load balancer/target group inventory |
+| PVC disks | Git/PVC/StorageClass + CSI | EBS CSI | PVC cleanup plus EBS inventory |
+| State bucket/ECR/DNS foundation | Bootstrap Terraform | AWS providers | Intentionally retained inventory and cost review |
+| Manual recovery snapshot | Explicit backup runbook/operator | RDS snapshot operation | Snapshot ID, owner, retention and deletion decision |
+
+A resource not directly listed in Terraform state can still be deliberately controller-managed. Track its owner and cleanup mechanism. A manual backup must also appear in your ledger even if Terraform did not create it.
+
+### Reader deliverable
+
+Prepare a session plan with: expected account/region; source commit; proposed creates/updates/deletes; budget observation method; backup decision; resource owners; expected teardown leftovers; and next-day reconstruction steps. Explain why each item is needed. This demonstrates planning skill before spending money.

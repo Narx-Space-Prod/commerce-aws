@@ -18,6 +18,7 @@
 - [4.13 DNS, certificate and ALB handshake](#413-dns-certificate-and-alb-handshake)
 - [4.14 Python helpers from an operator's point of view](#414-python-helpers-from-an-operators-point-of-view)
 - [4.15 Learn operations through small failure drills](#415-learn-operations-through-small-failure-drills)
+- [Guided simulation: alerts, messages and recovery evidence](#guided-simulation-alerts-messages-and-recovery-evidence)
 
 This chapter connects the services around the application. It teaches what each integration does, where its configuration lives, how data/credentials flow, and how to investigate failures without exposing secrets.
 
@@ -286,3 +287,71 @@ Run these only in a recreated disposable environment and use synthetic data:
 6. **Backup:** create a manual snapshot, wait for availability, restore into isolated capacity, verify a known synthetic order, and record elapsed recovery time and data-loss window.
 
 Every drill has four parts: change one failure condition, identify which signal detects it, restore service through the owning control plane, then document the evidence. Do not claim a drill happened just because an alert or backup resource exists.
+
+## Guided simulation: alerts, messages and recovery evidence
+
+**These are fictional case studies. No message, alert or restore described here has been executed by writing this guide.** Pause at each decision and explain it before reading the answer.
+
+### Case 1: order is saved but no receipt appears
+
+Evidence:
+
+```text
+Orders API: requests succeed
+Outbox oldest age: increasing
+Paid SQS queue: no new messages
+Publisher logs: AccessDenied on SendMessage
+Worker: healthy
+```
+
+The event has not reached SQS. Restarting the worker or redriving the DLQ cannot recover an event that never entered the queue. Inspect publisher ServiceAccount, Pod Identity association, queue ARN/URL and the role's `sqs:SendMessage` permission/boundary. A healthy API does not imply the asynchronous path works.
+
+After the scoped identity/configuration fix, the publisher should drain existing outbox work without requiring customers to place duplicate orders. Observe falling outbox age, messages reaching the queue, worker processing and the original order's receipt. A quiet alert alone is insufficient if metrics disappeared.
+
+### Case 2: a message is delivered twice
+
+The worker writes its receipt to the database, then crashes before acknowledging SQS. When visibility expires, the same event is delivered again.
+
+**Predict the result:** an idempotent worker recognizes the event's stored processing key and avoids a second business side effect. It can acknowledge the duplicate after confirming the prior committed outcome. Without that check, a duplicate delivery could create duplicate receipts or other effects. SQS visibility timeout reduces simultaneous processing; it does not guarantee exactly-once execution.
+
+The safe recovery question is “has this event's effect already committed?” Do not purge the queue to hide duplicates. Inspect event identifiers in appropriately restricted logs/data and preserve the relationship between source order, outbox event and receipt. Avoid publishing personal data to an alert channel.
+
+### Case 3: the alert fires but Slack stays quiet
+
+Evidence:
+
+```text
+Prometheus rule: firing
+Alertmanager: receives alert
+Alert labels: severity=info
+Configured Slack route: severity warning or critical
+Default receiver: null
+```
+
+The system is behaving according to its route. Rotating the webhook will not make `info` match a warning/critical route. Decide whether this condition deserves notification and adjust the rule/route under review. If severity already matched and delivery logs showed a webhook rejection, investigate the private webhook configuration instead.
+
+Verify the whole chain: rule has data, expression becomes true for its configured duration, Alertmanager receives the alert, routing selects Slack, delivery succeeds, and a resolution notification arrives after recovery. Distinguish a silence, inhibition, grouping delay and delivery error; all can make a firing alert appear quiet for different reasons.
+
+### Case 4: demonstrate a backup can restore useful data
+
+Choose a synthetic order with a recorded timestamp and known expected status. Establish a backup time, restore into an isolated authorized target, connect the app/test client using that target's generated settings, and verify the record. Also verify a write/read operation and application schema compatibility; a DB status of `available` only establishes service readiness.
+
+**Illustrative calculation:** a snapshot represents data at 14:00; failure occurs at 14:10; service is usable at 14:35 after restoration. Up to ten minutes of writes may be missing under this snapshot-only recovery, and measured recovery duration is 25 minutes from the declared incident start. These are illustrative observed outcomes, not agreed RPO/RTO targets. Compare them with requirements and record any missing data. A point-in-time restore capability can change the recovery choices, but it must be configured, retained and authorized.
+
+Record snapshot identifier, source/target ownership, creation and recovery timestamps, verification queries without secret values, and cleanup decision for the temporary restore. A restore exercise can otherwise leave an expensive second database behind.
+
+### Reader deliverable: explain a complete incident
+
+Use this format with one of the cases:
+
+```text
+Impact: what could the customer not do?
+Detection: which signal first showed it, and when?
+Evidence: what observations support the suspected failing layer?
+Alternative: what other explanation did you rule out, and how?
+Mitigation: which reviewed change restored service?
+Verification: which customer outcome and technical signals recovered?
+Follow-up: what would prevent recurrence or shorten diagnosis?
+```
+
+Do not write “everything healthy” without naming the checks. Do not turn a plausible explanation into a confirmed cause without evidence. This discipline is as important as knowing the tools.
