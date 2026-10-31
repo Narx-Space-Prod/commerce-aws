@@ -15,6 +15,11 @@ and destroy behaviour remain unverified.
 The AWS trusts were corrected to GitHub's immutable subject format, and the
 plan-only workflow subsequently passed. Publication and actual session deployment
 remain unverified.
+DNS/public HTTPS is deliberately deferred. No Route 53 zone, certificate or shop DNS
+record has been created for this project. Keep ingress disabled during initial
+private infrastructure/platform exercises. The complete secure-cookie login/payment
+journey still requires a suitable HTTPS access path before it can be verified.
+Prepare the first image release before starting paid infrastructure.
 GitHub variables `DELIVERY_ENABLED=false` and `INFRA_ENABLED=false` keep cloud jobs disabled.
 `deploy/environment.yaml` also starts disabled. Do not claim the AWS end-to-end
 deployment has passed until you have performed the activation exercises below.
@@ -677,10 +682,20 @@ release exists. Never put secret values in Helm values.
 
 Before setting `DELIVERY_ENABLED=true`, check ECR repositories, OIDC trust,
 main-only environments, branch protection and release App permissions. Enable
-publication and merge a small, real application change. To build all four images
-for the first release, make the initial application import after enabling delivery,
-or change the reviewed workflow/script configuration (which deliberately rebuilds
-all components). There is no hidden force-build API or mutable `latest` release.
+publication and merge a small, real application change, or manually dispatch `CI`
+on main. The dispatch has no diff base, so it selects all four images. This is the
+explicit first-release/revalidation path and does not create AWS infrastructure:
+
+```bash
+gh workflow run ci.yml --repo Narx-Space-Prod/commerce-aws --ref main
+```
+
+`DELIVERY_ENABLED` must be true for publication; otherwise the run only checks/builds
+and scans. Publication still requires main and the protected registry environment,
+and the release App still opens a human-reviewed release PR. Dispatching a feature
+branch cannot publish. There is no mutable `latest` release, and reruns cannot
+replace an immutable source tag with different image content. ECR image storage and
+requests may incur small charges even while the cluster is absent.
 
 The main pipeline tests/scans each affected image, exports the exact runtime tar,
 loads it in a separate publisher, publishes an immutable commit tag, signs its
