@@ -4,20 +4,19 @@ This is one application in one AWS **learning** environment. It reuses the Comme
 app so that your work focuses on infrastructure and operations. It does not depend
 on your laptop Kubernetes cluster or the previous six-repository delivery system.
 
-**Status snapshot, 31 October 2026:** The protected AWS infrastructure Apply
-run **41211513095** completed successfully after recovery of the earlier partial
-apply. Its reviewed plan reconciled the existing Terraform state, created the
-missing worker and EKS add-ons, and replaced the tainted runtime-secret resource.
-The final apply reported 6 added, 0 changed and 1 destroyed; the destroyed object
-was the tainted secret instance. Terraform now manages 59 session resources.
+**Status snapshot, 31 October 2026:** A protected destroy run (**41225381651**)
+partially removed the AWS session. Terraform reported 51 resources destroyed, then
+failed because the apply role lacked `iam:ListInstanceProfilesForRole` on eight
+session roles. The log confirms EKS, its worker, RDS, the VPC, queues and monitoring
+storage were removed. A narrowly scoped permission fix is being reviewed. The old
+destroy plan must not be reused; after the permission change, generate and review a
+fresh destroy plan against the updated state. `INFRA_ENABLED=false` blocks new runs.
 
-AWS currently has one active EKS 1.35 cluster (`commerce-aws`) with one Ready
-`m7i-flex.large` worker, one private single-AZ PostgreSQL RDS instance (`db.t4g.micro`),
-queues, secrets and supporting services. Argo CD is installed. Its six platform
-Applications—baseline, cert-manager, External Secrets, metrics-server, AWS Load
-Balancer Controller and monitoring—plus the platform root and commerce Application
-are Synced and Healthy. Prometheus, Grafana and Alertmanager are running; the
-Alertmanager Slack secret is mounted. No test alert has been sent.
+The teardown completed the ordered Kubernetes cleanup first. It removed Grafana and
+Prometheus PVCs. RDS was deleted without a final snapshot, and no manual snapshot
+existed, so its database data is lost. The latest failed run blocked deletion of
+eight project IAM roles; check the AWS inventory and new Terraform plan before
+assuming nothing else remains. Check billing after its reporting delay.
 
 The commerce Application is registered but the environment is deliberately disabled:
 `deploy/environment.yaml` has `enabled: false` and ingress disabled. Cloudflare
@@ -32,13 +31,13 @@ for review.
 Secure public HTTPS is needed before exercising login or checkout with real browser
 sessions. The Razorpay test credentials are not configured.
 
-The four immutable image digests in `deploy/release.json` exist in ECR and have
-previously verified signatures and SBOM attestations. `DELIVERY_ENABLED=false` means
-future main changes will not publish images. `INFRA_ENABLED=false` blocks new
-infrastructure workflow starts; neither flag stops the currently running AWS
-resources. EKS, its worker, RDS and monitoring EBS volumes continue to incur charges.
-No infrastructure destroy, restore, live customer journey or test alert has been
-performed yet. This status is a snapshot, not proof of the current AWS bill.
+The EKS/RDS resources were session-scoped and are separate from the retained
+bootstrap root. Cloudflare remains authoritative for `narx.space`; Route 53's
+delegated `prod.narx.space` child zone and Terraform state bucket belong to bootstrap
+and are retained. The four immutable image digests in `deploy/release.json` remain
+in ECR. `DELIVERY_ENABLED=false` keeps publishing disabled. No restore, live customer
+journey or test alert has been performed. This status is a snapshot, not proof of the
+current AWS bill or complete resource inventory.
 
 Read this guide in order for the first build: architecture and costs; identity and
 bootstrap; GitHub setup; session creation; platform and release; operations and
