@@ -5,8 +5,8 @@ on:
       operation:
         description: Session operation (bootstrap is managed separately)
         type: choice
-        options: [apply, destroy]
-        default: apply
+        options: [plan, apply, destroy]
+        default: plan
       confirmation:
         description: 'For destroy, type: destroy commerce-aws'
         type: string
@@ -70,6 +70,7 @@ jobs:
   apply:
     name: Apply reviewed saved plan
     needs: plan
+    if: inputs.operation != 'plan'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     environment: infrastructure-apply
