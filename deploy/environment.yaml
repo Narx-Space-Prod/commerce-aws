@@ -1,2 +1,10 @@
-# Replace through a reviewed PR after Terraform outputs and HTTPS are configured.
-enabled: false
+{
+  "enabled": false,
+  "region": "ap-south-1",
+  "publicOrigin": "https://localhost",
+  "ingress": {
+    "enabled": false
+  },
+  "runtimeSecretArn": "arn:aws:secretsmanager:ap-south-1:242321713378:secret:commerce-aws-runtime-aafe5d596689ca94c5880bcc0a-ksKIt7",
+  "databaseSecretArn": "arn:aws:secretsmanager:ap-south-1:242321713378:secret:rds!db-b2c9008f-5016-41e6-967a-4eaece958a2f-Bj8vSx"
+}
