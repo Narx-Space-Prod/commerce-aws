@@ -1,7 +1,8 @@
 # Upstream controller v3.6.2 IAM policy, retained with source in DOC.md.
 resource "aws_iam_role" "ingress" {
-  name               = "${var.name}-ingress"
-  assume_role_policy = local.pod_trust
+  permissions_boundary = "arn:aws:iam::${var.account_id}:policy/commerce-aws-ingress-boundary"
+  name                 = "${var.name}-ingress"
+  assume_role_policy   = local.pod_trust
 }
 resource "aws_iam_role_policy" "ingress" {
   role   = aws_iam_role.ingress.id
