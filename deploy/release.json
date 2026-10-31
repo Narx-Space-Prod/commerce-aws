@@ -1,6 +1,11 @@
 {
   "release": {
-    "source": "",
-    "images": {}
+    "images": {
+      "cart": "242321713378.dkr.ecr.ap-south-1.amazonaws.com/commerce-aws/cart@sha256:f9036967700f18dd380cdd361d92a9c637704c474111c86b2e9d8a01639f3339",
+      "catalogue": "242321713378.dkr.ecr.ap-south-1.amazonaws.com/commerce-aws/catalogue@sha256:de11c925ae14198d1dc952ed5fdcc5b161273cce61bc9fa9cc6336202b7e6c68",
+      "frontend": "242321713378.dkr.ecr.ap-south-1.amazonaws.com/commerce-aws/frontend@sha256:7759bf26c4facf4f99e7097bcd90c5d79c438c943116c03255efff3fe96d5496",
+      "orders": "242321713378.dkr.ecr.ap-south-1.amazonaws.com/commerce-aws/orders@sha256:848a4df4eef10e11a7483effb510c1f4149298430b2d7b3bc884b4e285cfbcbe"
+    },
+    "source": "8df71a7e7e67f41407ec7573e4a664daaa3243ff"
   }
 }
