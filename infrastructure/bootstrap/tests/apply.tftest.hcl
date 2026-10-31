@@ -4,10 +4,11 @@ mock_provider "aws" {
   }
 }
 variables {
-  account_id        = "123456789012"
-  budget_email      = "operator@example.com"
-  aws_region        = "ap-south-1"
-  state_bucket_name = "commerce-aws-test-state"
+  enable_production_subzone = false
+  account_id                = "123456789012"
+  budget_email              = "operator@example.com"
+  aws_region                = "ap-south-1"
+  state_bucket_name         = "commerce-aws-test-state"
 }
 run "constrained_apply" {
   command = apply
@@ -71,6 +72,34 @@ run "constrained_apply" {
       contains(jsondecode(local.apply_policy_documents.read).Statement[1].Action, "secretsmanager:GetResourcePolicy")
     )
     error_message = "Both Terraform identities need secret-policy reads scoped to this project's runtime secrets."
+  }
+  assert {
+    condition = (
+      length([for s in local.apply_dns_statements : s if try(s.Sid == "RequestOnlyTheShopCertificate", false) &&
+        s.Resource == ["*"] && contains(s.Action, "acm:RequestCertificate") &&
+        try(s.Condition["ForAllValues:StringEquals"]["acm:DomainNames"] == ["shop.prod.narx.space"], false)
+      ]) == 1 &&
+      alltrue([for s in local.apply_dns_statements : (
+        !contains(s.Action, "route53:ChangeResourceRecordSets") ||
+        s.Resource == ["arn:aws:route53:::hostedzone/Z01554551CVM0VIMF9TWU"]
+      )])
+    )
+    error_message = "Certificate issuance must be restricted to the production hostname, and DNS writes to its delegated zone."
+  }
+  assert {
+    condition = (
+      length([for s in local.apply_dns_statements : s if
+        try(s.Sid == "WriteShopCertificateValidationRecord", false) &&
+        s.Condition["ForAllValues:StringLike"]["route53:ChangeResourceRecordSetsNormalizedRecordNames"] == ["_*.shop.prod.narx.space"] &&
+        s.Condition["ForAllValues:StringEquals"]["route53:ChangeResourceRecordSetsRecordTypes"] == ["CNAME"]
+      ]) == 1 &&
+      length([for s in local.apply_dns_statements : s if
+        try(s.Sid == "WriteShopAliasRecord", false) &&
+        s.Condition["ForAllValues:StringEquals"]["route53:ChangeResourceRecordSetsNormalizedRecordNames"] == ["shop.prod.narx.space"] &&
+        s.Condition["ForAllValues:StringEquals"]["route53:ChangeResourceRecordSetsRecordTypes"] == ["A", "AAAA"]
+      ]) == 1
+    )
+    error_message = "DNS permission must permit only ACM validation CNAMEs and the shop apex A/AAAA alias."
   }
 
 }

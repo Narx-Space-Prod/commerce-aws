@@ -4,11 +4,12 @@ mock_provider "aws" {
   }
 }
 variables {
-  account_id         = "123456789012"
-  aws_region         = "ap-south-1"
-  state_bucket_name  = "commerce-aws-test-state"
-  budget_email       = "operator@example.com"
-  bootstrap_user_arn = "arn:aws:iam::123456789012:user/commerce-operator"
+  enable_production_subzone = false
+  account_id                = "123456789012"
+  aws_region                = "ap-south-1"
+  state_bucket_name         = "commerce-aws-test-state"
+  budget_email              = "operator@example.com"
+  bootstrap_user_arn        = "arn:aws:iam::123456789012:user/commerce-operator"
 }
 run "scoped_mfa_bootstrap" {
   command = apply

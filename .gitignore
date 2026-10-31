@@ -6,6 +6,7 @@
 *.tfvars
 *.tfvars.json
 !*.example.tfvars
+!infrastructure/bootstrap/production.auto.tfvars
 backend.hcl
 .work/
 node_modules/

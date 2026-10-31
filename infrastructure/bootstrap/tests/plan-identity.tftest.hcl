@@ -4,6 +4,7 @@ mock_provider "aws" {
   }
 }
 variables {
+  enable_production_subzone         = false
   account_id                        = "123456789012"
   aws_region                        = "ap-south-1"
   state_bucket_name                 = "commerce-aws-test-state"

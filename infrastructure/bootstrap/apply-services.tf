@@ -43,11 +43,91 @@ locals {
     { Effect = "Allow", Resource = ["arn:aws:cloudwatch:${var.aws_region}:${var.account_id}:alarm:commerce-aws-*"], Condition = local.regional, Action = ["cloudwatch:PutMetricAlarm", "cloudwatch:DeleteAlarms", "cloudwatch:TagResource", "cloudwatch:UntagResource"] },
     { Effect = "Allow", Resource = ["arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:/aws/eks/commerce-aws/cluster", "arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:/aws/eks/commerce-aws/cluster:*"], Condition = local.regional, Action = ["logs:CreateLogGroup", "logs:DeleteLogGroup", "logs:PutRetentionPolicy", "logs:DeleteRetentionPolicy", "logs:TagResource", "logs:UntagResource", "logs:TagLogGroup", "logs:UntagLogGroup"] }
   ]
+  apply_dns_statements = [
+    {
+      Sid      = "RequestOnlyTheShopCertificate"
+      Effect   = "Allow"
+      Action   = ["acm:RequestCertificate"]
+      Resource = ["*"]
+      Condition = {
+        StringEquals = {
+          "aws:RequestedRegion"        = var.aws_region
+          "acm:ValidationMethod"       = "DNS"
+          "acm:KeyAlgorithm"           = "RSA_2048"
+          "aws:RequestTag/Project"     = "commerce-aws"
+          "aws:RequestTag/Environment" = "learning"
+          "aws:RequestTag/ManagedBy"   = "terraform"
+        }
+        "ForAllValues:StringEquals" = {
+          "acm:DomainNames" = ["shop.prod.narx.space"]
+          "aws:TagKeys"     = ["Project", "Environment", "ManagedBy"]
+        }
+      }
+    },
+    {
+      Sid      = "TagProjectCertificates"
+      Effect   = "Allow"
+      Action   = ["acm:AddTagsToCertificate"]
+      Resource = ["arn:aws:acm:${var.aws_region}:${var.account_id}:certificate/*"]
+      Condition = {
+        StringEquals = {
+          "aws:ResourceTag/Project"    = "commerce-aws"
+          "aws:RequestTag/Project"     = "commerce-aws"
+          "aws:RequestTag/Environment" = "learning"
+          "aws:RequestTag/ManagedBy"   = "terraform"
+        }
+        "ForAllValues:StringEquals" = {
+          "aws:TagKeys" = ["Project", "Environment", "ManagedBy"]
+        }
+      }
+    },
+    {
+      Sid      = "ManageOnlyProjectCertificates"
+      Effect   = "Allow"
+      Action   = ["acm:DescribeCertificate", "acm:ListTagsForCertificate", "acm:DeleteCertificate"]
+      Resource = ["arn:aws:acm:${var.aws_region}:${var.account_id}:certificate/*"]
+      Condition = {
+        StringEquals = {
+          "aws:RequestedRegion"     = var.aws_region
+          "aws:ResourceTag/Project" = "commerce-aws"
+        }
+      }
+    },
+    {
+      Sid      = "WriteShopCertificateValidationRecord"
+      Effect   = "Allow"
+      Action   = ["route53:ChangeResourceRecordSets"]
+      Resource = ["arn:aws:route53:::hostedzone/${var.production_dns_zone_id}"]
+      Condition = {
+        "ForAllValues:StringLike" = {
+          "route53:ChangeResourceRecordSetsNormalizedRecordNames" = ["_*.shop.prod.narx.space"]
+        }
+        "ForAllValues:StringEquals" = {
+          "route53:ChangeResourceRecordSetsRecordTypes" = ["CNAME"]
+          "route53:ChangeResourceRecordSetsActions"     = ["CREATE", "UPSERT", "DELETE"]
+        }
+      }
+    },
+    {
+      Sid      = "WriteShopAliasRecord"
+      Effect   = "Allow"
+      Action   = ["route53:ChangeResourceRecordSets"]
+      Resource = ["arn:aws:route53:::hostedzone/${var.production_dns_zone_id}"]
+      Condition = {
+        "ForAllValues:StringEquals" = {
+          "route53:ChangeResourceRecordSetsNormalizedRecordNames" = ["shop.prod.narx.space"]
+          "route53:ChangeResourceRecordSetsRecordTypes"           = ["A", "AAAA"]
+          "route53:ChangeResourceRecordSetsActions"               = ["CREATE", "UPSERT", "DELETE"]
+        }
+      }
+    }
+  ]
   apply_policy_documents = {
     iam     = jsonencode({ Version = "2012-10-17", Statement = local.apply_iam_statements })
     network = jsonencode({ Version = "2012-10-17", Statement = local.apply_ec2_statements })
     cluster = jsonencode({ Version = "2012-10-17", Statement = local.apply_eks_statements })
     data    = jsonencode({ Version = "2012-10-17", Statement = local.apply_data_statements })
+    dns     = jsonencode({ Version = "2012-10-17", Statement = local.apply_dns_statements })
     state   = jsonencode({ Version = "2012-10-17", Statement = local.apply_storage_statements })
     read    = jsonencode({ Version = "2012-10-17", Statement = concat([jsondecode(local.plan_permissions).Statement[0], jsondecode(local.plan_permissions).Statement[1]], [{ Effect = "Allow", Action = ["elasticloadbalancing:DescribeLoadBalancers"], Resource = ["*"], Condition = local.regional }]) })
   }

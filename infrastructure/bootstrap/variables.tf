@@ -29,3 +29,14 @@ variable "enable_production_subzone" {
   type        = bool
   default     = false
 }
+
+variable "production_dns_zone_id" {
+  description = "Route 53 zone that owns the delegated production hostname."
+  type        = string
+  default     = "Z01554551CVM0VIMF9TWU"
+
+  validation {
+    condition     = var.production_dns_zone_id == "Z01554551CVM0VIMF9TWU"
+    error_message = "The session role is authorized to modify records only in the reviewed prod.narx.space hosted zone."
+  }
+}
