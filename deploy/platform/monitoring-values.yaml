@@ -52,3 +52,8 @@ alertmanager:
       - source_matchers: ['severity = critical']
         target_matchers: ['severity = warning']
         equal: [namespace, alertname]
+
+prometheusOperator:
+  admissionWebhooks:
+    certManager:
+      enabled: true

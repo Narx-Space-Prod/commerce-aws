@@ -1,0 +1,45 @@
+# Privileged platform configuration: changes require platform CODEOWNER review.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata: {name: platform, namespace: argocd}
+spec:
+  sourceRepos:
+    - https://github.com/Narx-Space-Prod/commerce-aws.git
+    - quay.io/jetstack/charts
+    - https://charts.external-secrets.io
+    - https://kubernetes-sigs.github.io/metrics-server
+    - https://aws.github.io/eks-charts
+    - https://prometheus-community.github.io/helm-charts
+  destinations:
+    - {server: 'https://kubernetes.default.svc', namespace: argocd}
+    - {server: 'https://kubernetes.default.svc', namespace: kube-system}
+    - {server: 'https://kubernetes.default.svc', namespace: external-secrets}
+    - {server: 'https://kubernetes.default.svc', namespace: cert-manager}
+    - {server: 'https://kubernetes.default.svc', namespace: monitoring}
+    - {server: 'https://kubernetes.default.svc', namespace: commerce}
+  clusterResourceWhitelist:
+    - {group: '', kind: Namespace}
+    - {group: storage.k8s.io, kind: StorageClass}
+    - {group: apiextensions.k8s.io, kind: CustomResourceDefinition}
+    - {group: rbac.authorization.k8s.io, kind: ClusterRole}
+    - {group: rbac.authorization.k8s.io, kind: ClusterRoleBinding}
+    - {group: admissionregistration.k8s.io, kind: MutatingWebhookConfiguration}
+    - {group: admissionregistration.k8s.io, kind: ValidatingWebhookConfiguration}
+    - {group: apiregistration.k8s.io, kind: APIService}
+  namespaceResourceWhitelist: [{group: '*', kind: '*'}]
+---
+# Deliberately no deletion finalizer: teardown removes this parent first,
+# then deletes each child with its controller dependencies still available.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata: {name: platform-root, namespace: argocd}
+spec:
+  project: platform
+  source:
+    repoURL: https://github.com/Narx-Space-Prod/commerce-aws.git
+    targetRevision: main
+    path: deploy/platform/apps
+  destination: {server: 'https://kubernetes.default.svc', namespace: argocd}
+  syncPolicy:
+    automated: {prune: true, selfHeal: true, allowEmpty: false}
+    syncOptions: [ServerSideApply=true]

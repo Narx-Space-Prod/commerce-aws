@@ -16,7 +16,7 @@ The AWS trusts were corrected to GitHub's immutable subject format, and the
 plan-only and protected identity verification workflows subsequently passed. The
 first image publication run 41198659786 passed; all four signatures and CycloneDX
 attestations were independently verified against the exact reusable `image.yml`
-identity on main. This release PR proposes those digests. Actual session deployment
+identity on main. The merged release manifest records those digests. Actual session deployment
 and teardown remain unverified.
 DNS/public HTTPS is deliberately deferred. No Route 53 zone, certificate or shop DNS
 record has been created for this project. Keep ingress disabled during initial
@@ -100,7 +100,7 @@ infrastructure/bootstrap/ Retained S3 state bucket, ECR, publisher OIDC role and
 infrastructure/session/   Environment composition, backend, inputs/outputs and resource moves
 infrastructure/modules/   Network, EKS and data child modules
 deploy/chart/             One small Helm application chart
-deploy/platform/          Pinned platform versions, storage and Helm values
+deploy/platform/          Argo platform Applications, baseline resources and chart values
 deploy/environment.yaml   Reviewed AWS environment settings; initially disabled
 deploy/release.json       Four reviewed immutable image references
 deploy/argocd.yaml        AppProject and the one application
@@ -214,7 +214,8 @@ ALB does not also belong in Terraform state: two writers would conflict.
 | EC2 instances, root disks, autoscaling group and node interfaces | EKS managed node group / AWS service | Delete through the node group; verify instance, volume, ASG and interface inventory afterward. |
 | ALB, listeners, target groups and controller security groups | Reviewed Helm Ingress + Load Balancer Controller | Remove Ingress while its controller runs; inspect AWS inventory, including target groups and security groups. |
 | Redis and monitoring EBS disks | Reviewed StorageClass/PVCs + EBS CSI | Delete PVCs while CSI runs; inspect disks and volume attachments afterward. |
-| Platform Helm releases | Pinned Git values/versions + platform helper | Uninstall using the helper before destroying EKS. They are not Terraform-managed releases. |
+| Argo CD bootstrap release | Pinned Helm chart + `argo-values.yaml`, installed by platform helper | Uninstall last, after Argo finishes child-resource cleanup. |
+| Platform components and baseline resources | Argo platform Applications + pinned charts and reviewed Git values | Ordered cascading Application deletion through the helper before destroying EKS. |
 | Application Kubernetes objects | Argo CD Application + Helm chart and reviewed Git values | Stop reconciliation and remove the namespace during teardown. |
 | Manual database recovery snapshots | Snapshot exercise command, ownership tags and private inventory IDs | Intentionally retained only with a recorded purpose; delete when no longer needed. Snapshots are not automatically managed by session state. |
 | Optional ACM certificate/validation record | Terraform if explicitly enabled and authorised | Destroy through its owning state; externally created certificates are not currently managed automatically. |
@@ -642,34 +643,75 @@ The helper checks the AWS account, cluster name and actual API endpoint. It targ
 the dedicated `commerce-aws` context, never your local kind cluster:
 
 ```bash
-# Optional: download and validate pinned platform charts before a session.
+# Optional: download and validate the pinned Argo CD bootstrap chart.
 bash scripts/platform.sh prepare
 # After infrastructure exists, prepare non-secret configuration for a reviewed PR.
 bash scripts/platform.sh configure
-# Install/reconcile platform tools, with account and cluster checks.
+# Bootstrap Argo and wait for its platform Applications, with account/cluster checks.
 bash scripts/platform.sh install
 kubectl --context commerce-aws get nodes
 kubectl --context commerce-aws get pods -A
 kubectl --context commerce-aws get storageclass
 ```
 
-It installs pinned External Secrets, metrics-server, AWS Load Balancer Controller,
-kube-prometheus-stack and Argo CD via Helm. This is a deliberate split: Terraform
-owns AWS, Helm owns platform releases, Argo CD owns the application. Do not let a
-second controller manage the same objects. Platform upgrades change versions/values
-through a PR, then rerun this helper; Argo does not upgrade the platform tools.
+Terraform owns AWS infrastructure and EKS-managed add-ons. The helper installs
+**only Argo CD** as a Helm release. Argo CD then owns six platform Applications:
 
-`prepare` caches the pinned platform charts and validates their archive metadata;
-it does not query AWS or Kubernetes and does not require an application release.
-`configure` reads the root Terraform outputs and writes a disabled environment
-candidate to ignored `.work/environment.generated.json`. Review it through a PR
-before copying it to `deploy/environment.yaml`; `https://localhost` is a placeholder,
-not an already configured TLS endpoint. No secret values enter this candidate.
-Install waits for ready nodes, uses atomic Helm upgrades, checks operator CRDs and
-Argo server readiness, then applies the existing Application. Live cluster behaviour
-still needs a real test. Helm releases remain owned by the helper in the current
-implementation; moving their ongoing reconciliation into Argo CD is a separate
-planned ownership change, not something this helper silently implements.
+| Application | Desired configuration | Order |
+|---|---|---|
+| `platform-baseline` | Git resources: encrypted gp3 StorageClass, commerce/monitoring namespaces, commerce PSA labels and quota | Wave -20 |
+| `platform-cert-manager` | Pinned OCI cert-manager chart; internal webhook certificate issuance and renewal | Wave -10 |
+| `platform-external-secrets` | Pinned External Secrets chart | Wave 0 |
+| `platform-metrics-server` | Pinned metrics-server chart | Wave 0 |
+| `platform-ingress` | Pinned AWS Load Balancer Controller chart + Git ingress values | Wave 0 |
+| `platform-monitoring` | Pinned kube-prometheus-stack chart + Git monitoring values | Wave 0 |
+
+`deploy/platform-root.yaml` defines the privileged platform AppProject and parent
+Application. The parent reconciles child Application definitions from
+`deploy/platform/apps/`. Platform CODEOWNER review is essential: this project can
+install cluster RBAC, webhooks and CRDs within its declared kind/repository limits.
+The separate commerce AppProject remains restricted to application resources.
+The Application health customization makes the parent wait for baseline and
+cert-manager health before advancing sync waves.
+
+Argo renders the Helm charts; it does not create Helm release records for these
+children. Upgrade a platform chart pin or values through a reviewed PR and Argo
+reconciles it. Argo CD itself is deliberately outside its own Application tree:
+upgrade its pin/values through a PR, then rerun the bootstrap helper. Do not also
+install these children with Helm or Terraform. This path targets a fresh EKS
+cluster; adopting existing Helm releases requires a separately reviewed migration.
+
+The controller and monitoring Applications use multiple sources: an exact upstream
+chart version and a Git `ref: values` source. `$values/...` resolves reviewed values
+from this repository. Annotation-based Argo resource tracking preserves the Helm
+release labels used by selectors when the Application and release names differ.
+cert-manager owns the generated internal TLS secrets and webhook CA bundles;
+Argo ignores only the injected webhook CA bundle fields. This internal TLS does
+not configure public application HTTPS, DNS or an ACM certificate.
+
+`prepare` caches only the Argo bootstrap chart and validates its archive metadata;
+it does not query AWS or Kubernetes or require an application image. Argo downloads
+its child charts when reconciling; upstream availability is still required.
+`configure` reads Terraform outputs and writes two ignored, non-secret candidates:
+`.work/environment.generated.json` and `.work/platform-ingress.generated.json`.
+Review/copy these through a configuration PR into `deploy/environment.yaml` and
+`deploy/platform/ingress-values.yaml` respectively (JSON is valid YAML). The VPC ID
+changes when the session is recreated; the installer rejects mismatched cluster,
+region or VPC values before bootstrapping. The application candidate stays disabled,
+with ingress disabled; `https://localhost` is an unconfigured placeholder.
+
+Install waits for ready nodes, seeds private monitoring inputs, atomically installs
+Argo CD, applies the platform root and waits up to 20 minutes for all six children
+to report Synced and Healthy. It then checks required operator CRDs and applies the
+commerce Application. A chart download or health failure blocks this final step;
+inspect Application conditions and pod events before retrying. Local tests cover
+ownership, configuration and cleanup ordering. Live reconciliation, operator
+admission, node pod/IP capacity and memory fit still require the first EKS session;
+a single worker is a learning sizing target, not a verified capacity guarantee.
+Offline renders currently contain about 20 steady platform pods, before EKS
+add-ons and commerce pods. Check effective node `allocatable.pods`, pod IP capacity
+and resource requests before enabling commerce; the default node pod limit may
+require a reviewed CNI/node-sizing change. Do not enable workloads on assumed capacity.
 
 The helper generates/preserves Grafana credentials and prompts for a **dedicated**
 Slack incoming webhook with hidden input. It never copies credentials from the old
@@ -894,8 +936,13 @@ APIs. This guard cannot identify untagged orphaned volumes, and local Terraform
 commands do not run it; always perform the inventory and billing review below.
 Removing EKS before the ALB controller processes its
 Ingress finalizer can leave billable load balancers and network interfaces behind.
-Deleting Helm releases does not reliably delete their retained PVCs; the helper
-explicitly deletes monitoring PVCs while the EBS driver still exists.
+The helper removes the non-cascading parent first, disables child auto-sync, then
+cleans the commerce workload and monitoring Application/PVCs while the ALB and CSI
+controllers still run. It removes the remaining controller Applications before
+cert-manager, deletes baseline resources, and uninstalls Argo CD last. Child deletion
+finalizers keep Argo running until their resources are removed; never strip a stuck
+finalizer without investigating. StatefulSet deletion does not reliably delete its
+retained PVCs, so the helper explicitly deletes monitoring PVCs while CSI exists.
 
 Finally verify EKS cluster deletion and inspect EC2 instances, EBS, ALBs, RDS,
 snapshots, public IPs, secrets and CloudWatch log groups for this project. Confirm
@@ -1023,7 +1070,8 @@ entry describes intent; successful validation or a real deployment is separate.
 | `infrastructure/session/outputs.tf`, `session.example.tfvars`, `.terraform.lock.hcl`, `tests/` | Useful references, example inputs, locked provider versions and mocked boundary checks. |
 | `deploy/chart/templates/` | Workloads and services, Redis/storage, bootstrap job, External Secrets, network policies, monitoring resources and optional ingress. |
 | `deploy/chart/values.yaml`, `deploy/environment.yaml`, `deploy/release.json` | Base defaults, reviewed environment settings and immutable release digests. Argo combines environment and release files; actual current settings start disabled. |
-| `deploy/platform/` | Helm chart versions/values and storage class. Monitoring, secrets, Argo and controllers are installed by the platform helper, not by Terraform. |
+| `deploy/platform/` | Pinned child Applications, Git chart values and baseline resources; Argo continuously reconciles these. `versions.env` pins only the Helm-installed Argo bootstrap. |
+| `deploy/platform-root.yaml` | Privileged platform AppProject and parent Application; ordered sync with child health and controlled teardown. |
 | `deploy/argocd.yaml` | One AppProject and one Application, tracking `main`; automated sync, pruning, self-heal and selected HPA replica-difference handling. |
 | `.github/CODEOWNERS`, `.github/PULL_REQUEST_TEMPLATE.md` | Review ownership and PR prompts. Effective branch protection/environment settings live in GitHub and must also be checked there. |
 | `.github/workflows/` | CI orchestration, reusable image workflow, manual infrastructure workflow and manually dispatched release-App verification. |
@@ -1177,9 +1225,10 @@ state inspection before a new plan/retry.
 
 ### Argo CD and Kubernetes
 
-The platform helper installs Argo CD; Argo watches the public repository's main
-branch and the chart path. Its Application renders values in order from environment
-and release files. When desired state changes, automated sync applies it; `selfHeal`
+The platform helper installs Argo CD and its platform root; Argo reconciles the
+platform children described above and the separate commerce Application. The
+commerce Application watches the public repository's main branch and chart path,
+rendering values in order from environment and release files. When desired state changes, automated sync applies it; `selfHeal`
 repairs supported drift and `prune` removes objects no longer in desired state.
 A release PR merge can therefore change the running pods after Argo polls and syncs,
 provided the app is enabled and the cluster is healthy. It is not a guarantee of
@@ -1218,7 +1267,7 @@ needed to identify **input → validation → action → output → failure**. S
   existing secret, generates a Grafana password or accepts a hidden Slack webhook,
   and passes the Kubernetes object over stdin. It does not create an AWS secret.
 * `scripts/platform.sh`: verifies account, cluster and endpoint before installing
-  pinned Helm releases or cleaning up. Teardown requires the exact confirmation
+  Argo CD and waiting for GitOps platform health, or cleaning up. Teardown requires the exact confirmation
   phrase and must run while the cluster/controller still exists.
 * `scripts/tools.sh`: downloads selected pinned CI tools and verifies checksums.
   Review the source, checksum and version before changing a pin. `.work` is local,

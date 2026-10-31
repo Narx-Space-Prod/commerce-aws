@@ -28,10 +28,6 @@ prepare_charts() {
     fi
     helm show chart "$archive" > /dev/null
   done <<CHARTS
-external-secrets $SECRETS_CHART https://charts.external-secrets.io
-metrics-server $METRICS_CHART https://kubernetes-sigs.github.io/metrics-server
-aws-load-balancer-controller $INGRESS_CHART https://aws.github.io/eks-charts
-kube-prometheus-stack $MONITORING_CHART https://prometheus-community.github.io/helm-charts
 argo-cd $ARGO_CHART https://argoproj.github.io/argo-helm
 CHARTS
 }
@@ -56,9 +52,14 @@ values={"enabled":False,"region":region,"publicOrigin":"https://localhost","ingr
 for key in ("runtimeSecretArn","databaseSecretArn"):
     if not values[key].startswith(f"arn:aws:secretsmanager:{region}:{account}:secret:"):
         raise SystemExit("Secret ARN does not belong to the expected account/region")
+vpc=get("vpc_id")
+if not re.fullmatch(r"vpc-[0-9a-f]+", vpc):
+    raise SystemExit("Invalid VPC output")
+controller={"clusterName":get("cluster_name"),"region":region,"vpcId":vpc,"enableCertManager":True,"serviceAccount":{"name":"aws-load-balancer-controller"},"defaultTags":{"Project":"commerce-aws","Environment":"learning"}}
 Path(".work/environment.generated.json").write_text(json.dumps(values,indent=2)+"\n")
+Path(".work/platform-ingress.generated.json").write_text(json.dumps(controller,indent=2)+"\n")
 '
-  echo 'Review .work/environment.generated.json through a configuration PR. Workloads and ingress are disabled; HTTPS localhost is a placeholder until private TLS is configured.'
+  echo 'Review .work/environment.generated.json and .work/platform-ingress.generated.json through a configuration PR. Workloads and ingress are disabled; HTTPS localhost is a placeholder until private TLS is configured.'
   exit 0
 fi
 if [ "$operation" = install ]; then prepare_charts; fi
@@ -79,33 +80,65 @@ test "$(kubectl config current-context)" = commerce-aws
 expected=$(aws eks describe-cluster --name "$cluster" --region "$region" --query cluster.endpoint --output text)
 test "$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')" = "$expected"
 if [ "$operation" = install ]; then
+  # Reject stale or placeholder cluster values before bootstrapping controllers.
+  CLUSTER="$cluster" REGION="$region" VPC="$vpc" python3 - <<'PYCODE'
+import os, yaml
+values=yaml.safe_load(open('deploy/platform/ingress-values.yaml'))
+expected={'clusterName':os.environ['CLUSTER'],'region':os.environ['REGION'],'vpcId':os.environ['VPC']}
+if any(values.get(key) != value for key,value in expected.items()):
+    raise SystemExit('Platform ingress values do not match Terraform outputs; generate and merge the configuration PR first.')
+PYCODE
   kubectl --context commerce-aws wait --for=condition=Ready nodes --all --timeout=10m
-  kubectl --context commerce-aws apply -f deploy/platform/storage.yaml
-  kubectl --context commerce-aws create namespace monitoring --dry-run=client -o yaml | kubectl --context commerce-aws apply -f -
-  # Secret helper prompts safely and preserves existing values.
+  if [ -z "$(kubectl --context commerce-aws get namespace monitoring --ignore-not-found -o name)" ]; then
+    kubectl --context commerce-aws create namespace monitoring
+  fi
+  # Seed these private inputs once. The baseline Application subsequently owns the namespace.
   python3 scripts/secrets.py grafana
   python3 scripts/secrets.py slack
-  helm upgrade --install external-secrets "$chart_dir/external-secrets-$SECRETS_CHART.tgz" --kube-context commerce-aws -n external-secrets --create-namespace --set serviceAccount.name=external-secrets --atomic --wait --timeout 10m
-  helm upgrade --install metrics-server "$chart_dir/metrics-server-$METRICS_CHART.tgz" --kube-context commerce-aws -n kube-system --atomic --wait --timeout 10m
-  helm upgrade --install aws-load-balancer-controller "$chart_dir/aws-load-balancer-controller-$INGRESS_CHART.tgz" --kube-context commerce-aws -n kube-system --set "clusterName=$cluster" --set "region=$region" --set "vpcId=$vpc" --set serviceAccount.name=aws-load-balancer-controller --set defaultTags.Project=commerce-aws --set defaultTags.Environment=learning --atomic --wait --timeout 10m
-  helm upgrade --install monitoring "$chart_dir/kube-prometheus-stack-$MONITORING_CHART.tgz" --kube-context commerce-aws -n monitoring -f deploy/platform/monitoring-values.yaml --atomic --wait --timeout 15m
   helm upgrade --install argocd "$chart_dir/argo-cd-$ARGO_CHART.tgz" --kube-context commerce-aws -n argocd --create-namespace -f deploy/platform/argo-values.yaml --atomic --wait --timeout 10m
-  kubectl --context commerce-aws wait --for=condition=Established --timeout=5m crd/externalsecrets.external-secrets.io crd/secretstores.external-secrets.io crd/servicemonitors.monitoring.coreos.com crd/prometheusrules.monitoring.coreos.com crd/applications.argoproj.io
+  kubectl --context commerce-aws wait --for=condition=Established --timeout=5m crd/applications.argoproj.io
+  kubectl --context commerce-aws apply -f deploy/platform-root.yaml
+  python3 - <<'PYCODE'
+import json, subprocess, time
+names=['platform-baseline','platform-cert-manager','platform-external-secrets','platform-metrics-server','platform-ingress','platform-monitoring']
+deadline=time.monotonic()+1200
+while time.monotonic() < deadline:
+    pending=[]
+    for name in names:
+        result=subprocess.run(['kubectl','--context','commerce-aws','-n','argocd','get','application',name,'--ignore-not-found','-o','json'],capture_output=True,text=True)
+        if result.returncode:
+            raise SystemExit('Cannot read platform Application status: '+name)
+        obj=json.loads(result.stdout) if result.stdout.strip() else {}
+        status=obj.get('status',{})
+        if status.get('sync',{}).get('status')!='Synced' or status.get('health',{}).get('status')!='Healthy':
+            pending.append(name)
+    if not pending:
+        print('Platform Applications are Synced and Healthy.'); break
+    print('Waiting for platform: '+', '.join(pending),flush=True)
+    time.sleep(10)
+else:
+    raise SystemExit('Platform readiness timed out; inspect Argo Application conditions and pod events.')
+PYCODE
+  kubectl --context commerce-aws wait --for=condition=Established --timeout=5m crd/externalsecrets.external-secrets.io crd/secretstores.external-secrets.io crd/servicemonitors.monitoring.coreos.com crd/prometheusrules.monitoring.coreos.com
   kubectl --context commerce-aws apply -f deploy/argocd.yaml
-  kubectl --context commerce-aws -n argocd rollout status deployment/argocd-server --timeout=5m
-  echo 'Platform readiness checks passed. Application sync and business health still require separate verification.'
-  echo 'Platform installed. Review deploy/environment.yaml and a signed release before enabling the app.'
+  echo 'Platform reconciled by Argo CD. Application configuration and business health require separate verification.'
 else
-  test "${CONFIRM_DESTROY:-}" = 'destroy commerce-aws' || { echo 'Set CONFIRM_DESTROY="destroy commerce-aws" after reviewing the backup and teardown steps in DOC.md.' >&2; exit 1; }
-  # Stop reconciliation before deleting resources; keep the ALB controller until its finalizers finish.
-  kubectl --context commerce-aws -n argocd delete application commerce --ignore-not-found
+  test "${CONFIRM_DESTROY:-}" = 'destroy commerce-aws' || { echo 'Set CONFIRM_DESTROY="destroy commerce-aws" after reviewing backup and teardown in DOC.md.' >&2; exit 1; }
+  # Parent has no cascade finalizer: stop it recreating children, preserve ordered cleanup.
+  kubectl --context commerce-aws -n argocd delete application platform-root --ignore-not-found --wait=true --timeout=5m
+  for application in platform-baseline platform-cert-manager platform-external-secrets platform-metrics-server platform-ingress platform-monitoring; do
+    if [ -n "$(kubectl --context commerce-aws -n argocd get application "$application" --ignore-not-found -o name)" ]; then
+      kubectl --context commerce-aws -n argocd patch application "$application" --type merge -p '{"spec":{"syncPolicy":{"automated":null}}}'
+    fi
+  done
+  kubectl --context commerce-aws -n argocd delete application commerce --ignore-not-found --wait=true --timeout=5m
   kubectl --context commerce-aws -n commerce delete ingress commerce --ignore-not-found --wait=true --timeout=10m
   kubectl --context commerce-aws delete namespace commerce --ignore-not-found --wait=true --timeout=10m
-  helm uninstall monitoring --kube-context commerce-aws -n monitoring --ignore-not-found --wait --timeout 10m
+  kubectl --context commerce-aws -n argocd delete application platform-monitoring --ignore-not-found --wait=true --timeout=10m
   kubectl --context commerce-aws -n monitoring delete pvc --all --wait=true --timeout=10m
-  for item in 'argocd argocd' 'external-secrets external-secrets' 'metrics-server kube-system' 'aws-load-balancer-controller kube-system'; do
-    read -r release namespace <<< "$item"
-    helm uninstall "$release" --kube-context commerce-aws -n "$namespace" --ignore-not-found --wait --timeout 10m
+  for application in platform-external-secrets platform-metrics-server platform-ingress platform-cert-manager platform-baseline; do
+    kubectl --context commerce-aws -n argocd delete application "$application" --ignore-not-found --wait=true --timeout=10m
   done
-  echo 'Kubernetes cleanup complete. Inspect ALBs, ENIs and EBS volumes before approving Terraform destroy.'
+  helm uninstall argocd --kube-context commerce-aws -n argocd --ignore-not-found --wait --timeout 10m
+  echo 'Ordered GitOps teardown complete. Inspect ALBs, target groups, ENIs and EBS before Terraform destroy.'
 fi
