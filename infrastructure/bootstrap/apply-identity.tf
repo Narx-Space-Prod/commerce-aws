@@ -24,6 +24,9 @@ locals {
       Condition = { ArnEquals = { "iam:PolicyARN" = policies } }
     }],
     [{ Effect = "Allow", Action = ["iam:DeleteRole", "iam:TagRole", "iam:UntagRole"], Resource = values(local.session_roles) },
+      # The AWS provider checks role instance profiles before DeleteRole. Keep
+      # that read scoped to the exact workload roles managed by this session.
+      { Sid = "ListProfilesForSessionRoles", Effect = "Allow", Action = ["iam:ListInstanceProfilesForRole"], Resource = values(local.session_roles) },
       { Effect = "Allow", Action = ["iam:PutRolePolicy", "iam:DeleteRolePolicy"], Resource = [for key in ["session-publisher", "session-worker", "secrets", "ingress"] : local.session_roles[key]] },
       { Effect = "Allow", Action = ["iam:PassRole"], Resource = [local.session_roles.cluster, local.session_roles.node], Condition = { StringEquals = { "iam:PassedToService" = ["eks.amazonaws.com", "ec2.amazonaws.com"] } } },
       { Effect = "Allow", Action = ["iam:PassRole"], Resource = [for key in ["cni", "storage", "session-publisher", "session-worker", "secrets", "ingress"] : local.session_roles[key]], Condition = { StringEquals = { "iam:PassedToService" = "pods.eks.amazonaws.com" } } },
