@@ -11,6 +11,26 @@ spec.loader.exec_module(inventory)
 
 
 class InventoryBoundaries(unittest.TestCase):
+    def test_pending_key_deletion_remains_visible_after_teardown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'report.json'
+            args = ['inventory.py', '--profile', 'lab', '--account', '123456789012', '--output', str(path)]
+
+            def aws(profile, region, operation):
+                if operation[0] == 'sts':
+                    return {'Account': '123456789012', 'Arn': 'arn:aws:iam::123456789012:role/lab'}
+                if operation[:2] == ['kms', 'list-keys']:
+                    return [{'id': 'retained-key', 'arn': 'arn:aws:kms:ap-south-1:123456789012:key/retained-key'}]
+                if operation[:2] == ['kms', 'describe-key']:
+                    return {'id': 'retained-key', 'state': 'PendingDeletion', 'deletionDate': '2026-11-07'}
+                return []
+
+            with patch('sys.argv', args), patch.object(inventory, 'aws', side_effect=aws):
+                self.assertEqual(inventory.main(), 0)
+            report = json.loads(path.read_text())
+            self.assertEqual(report['resources']['kms_keys'][0]['state'], 'PendingDeletion')
+            self.assertEqual(report['resources']['kms_keys'][0]['deletionDate'], '2026-11-07')
+
     def test_wrong_account_stops_before_resource_queries(self):
         with patch('sys.argv', ['inventory.py', '--profile', 'lab', '--account', '123456789012']), \
              patch.object(inventory, 'aws', return_value={'Account': '999999999999'}) as aws:

@@ -181,6 +181,43 @@ must not be destroyed as part of this project's cleanup.
 
 ## Security and review boundaries
 
+### Resource ownership and retention contract
+
+Every project resource must have an owner, a source of desired configuration and
+a deletion or retention decision. Terraform state tracks direct AWS resources;
+controllers track their generated resources through Kubernetes objects and AWS
+identifiers/tags. The account inventory is the independent check. A controller-created
+ALB does not also belong in Terraform state: two writers would conflict.
+
+| Resource | Configuration owner | End-of-session handling |
+|---|---|---|
+| State bucket, ECR repositories, budget, OIDC and pipeline identities/boundaries | Terraform bootstrap state | Intentionally retained; review storage, image retention and permissions. |
+| VPC, EKS, node group/launch template, RDS, queues, runtime secret, alarms and notification key/topic | Terraform session state | Destroy through a reviewed plan; check scheduled key deletion and retained data separately. |
+| EC2 instances, root disks, autoscaling group and node interfaces | EKS managed node group / AWS service | Delete through the node group; verify instance, volume, ASG and interface inventory afterward. |
+| ALB, listeners, target groups and controller security groups | Reviewed Helm Ingress + Load Balancer Controller | Remove Ingress while its controller runs; inspect AWS inventory, including target groups and security groups. |
+| Redis and monitoring EBS disks | Reviewed StorageClass/PVCs + EBS CSI | Delete PVCs while CSI runs; inspect disks and volume attachments afterward. |
+| Platform Helm releases | Pinned Git values/versions + platform helper | Uninstall using the helper before destroying EKS. They are not Terraform-managed releases. |
+| Application Kubernetes objects | Argo CD Application + Helm chart and reviewed Git values | Stop reconciliation and remove the namespace during teardown. |
+| Manual database recovery snapshots | Snapshot exercise command, ownership tags and private inventory IDs | Intentionally retained only with a recorded purpose; delete when no longer needed. Snapshots are not automatically managed by session state. |
+| Optional ACM certificate/validation record | Terraform if explicitly enabled and authorised | Destroy through its owning state; externally created certificates are not currently managed automatically. |
+| Shop DNS record | Automation still pending, depending on the DNS provider | Do not create it as an undocumented console action; complete tracked automation before public ingress setup. |
+| AWS service-linked roles | AWS service lifecycle, recorded in global inventory | May be shared across workloads; retain intentionally rather than deleting shared identities blindly. |
+| Existing human IAM user/group/MFA, domain/hosted zone | Pre-existing account/domain administration | Record in the baseline; these are outside the session state and must not be deleted during project teardown. |
+
+The temporary `commerce-aws-iam-setup` role was a recorded bootstrap exception and
+has been deleted. The persistent objects it created were imported into bootstrap
+state and the post-import plan showed no drift. Do not create new project resources
+manually without importing them or assigning an explicit controller/retention owner.
+Inventory includes project IAM identities, service-linked roles, ALB target groups,
+secrets pending deletion and KMS deletion status; absence of a successful query is
+never evidence of cleanup. This remains a scoped Mumbai/global inventory, not a
+guarantee that every AWS service and region has been audited.
+
+The initial snapshot exercise and final DNS record are current manual gaps.
+Before using them, implement the appropriate automation or record their explicit
+ownership and retained identifiers. An approval, inventory report or tag alone
+does not make a resource Terraform-managed.
+
 Use a dedicated learning AWS account if available, MFA on the root account and an
 SSO/assumable role for normal work. Never create root access keys. Do not put AWS
 access keys, GitHub App private keys, Slack URLs or payment keys into this repo/chat.
@@ -880,6 +917,24 @@ not grant permissions. Pod Identity maps a Kubernetes service account to an AWS
 role for specific pods. None of these is a reason to put long-lived keys in Git.
 
 ## Reference: repository and Terraform code tour
+
+### Terraform modules in the current layout
+
+`infrastructure/bootstrap` and `infrastructure/session` are two root modules with
+separate backends/state keys. Files inside a root are loaded together; filenames
+do not determine execution order. References establish the dependency graph.
+There are currently no reusable child modules. This is a valid small-stack layout;
+large organisations commonly use child modules when they need shared interfaces,
+ownership or consistent deployments across environments. A file per resource or
+a wrapper around every individual resource does not improve modularity by itself.
+
+After proving the initial lifecycle, useful child-module boundaries would be
+network (VPC/subnets/routes), EKS (cluster/nodes/add-ons/identities), and data
+(database/queues/runtime credentials and access). These are a potential refactor,
+not the current implementation. Preserve explicit inputs/outputs, avoid circular
+dependencies and retain the two root-state lifecycles. Moving existing resources
+requires reviewed `moved` blocks or a controlled state migration and a plan showing
+no unintended recreation; reorganising files alone does not migrate resource addresses.
 
 This table describes the current source, including optional or disabled paths. An
 entry describes intent; successful validation or a real deployment is separate.

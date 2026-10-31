@@ -26,6 +26,7 @@ CHECKS = {
     'security_groups': ['ec2', 'describe-security-groups', '--query', 'SecurityGroups[].{id:GroupId,name:GroupName,vpc:VpcId,tags:Tags}'],
     'ebs_snapshots': ['ec2', 'describe-snapshots', '--owner-ids', 'self', '--query', 'Snapshots[].{id:SnapshotId,volume:VolumeId,sizeGiB:VolumeSize,state:State,tags:Tags}'],
     'load_balancers': ['elbv2', 'describe-load-balancers', '--query', 'LoadBalancers[].{arn:LoadBalancerArn,name:LoadBalancerName,vpc:VpcId,dns:DNSName,state:State.Code}'],
+    'target_groups': ['elbv2', 'describe-target-groups', '--query', 'TargetGroups[].{arn:TargetGroupArn,name:TargetGroupName,vpc:VpcId,loadBalancers:LoadBalancerArns}'],
     'databases': ['rds', 'describe-db-instances', '--query', 'DBInstances[].{id:DBInstanceIdentifier,arn:DBInstanceArn,status:DBInstanceStatus,class:DBInstanceClass,tags:TagList}'],
     'database_snapshots': ['rds', 'describe-db-snapshots', '--snapshot-type', 'manual', '--query', 'DBSnapshots[].{id:DBSnapshotIdentifier,database:DBInstanceIdentifier,status:Status,tags:TagList}'],
     'retained_database_backups': ['rds', 'describe-db-instance-automated-backups', '--query', 'DBInstanceAutomatedBackups[].{id:DBInstanceIdentifier,status:Status,arn:DBInstanceAutomatedBackupsArn}'],
@@ -33,12 +34,15 @@ CHECKS = {
     'log_groups': ['logs', 'describe-log-groups', '--query', 'logGroups[].{name:logGroupName,bytes:storedBytes,retentionDays:retentionInDays}'],
     'alarms': ['cloudwatch', 'describe-alarms', '--alarm-types', 'MetricAlarm', 'CompositeAlarm', '--query', '{metric:MetricAlarms[].{arn:AlarmArn,name:AlarmName,state:StateValue},composite:CompositeAlarms[].{arn:AlarmArn,name:AlarmName,state:StateValue}}'],
     'certificates': ['acm', 'list-certificates', '--query', 'CertificateSummaryList[].{arn:CertificateArn,domain:DomainName,status:Status}'],
-    'secret_metadata': ['secretsmanager', 'list-secrets', '--query', 'SecretList[].{arn:ARN,name:Name,deletedDate:DeletedDate,tags:Tags}'],
+    'secret_metadata': ['secretsmanager', 'list-secrets', '--include-planned-deletion', '--query', 'SecretList[].{arn:ARN,name:Name,deletedDate:DeletedDate,tags:Tags}'],
     'queues': ['sqs', 'list-queues', '--query', 'QueueUrls'],
     'kms_keys': ['kms', 'list-keys', '--query', 'Keys[].{id:KeyId,arn:KeyArn}'],
     'topics': ['sns', 'list-topics', '--query', 'Topics[].TopicArn'],
     'buckets_global': ['s3api', 'list-buckets', '--query', 'Buckets[].{name:Name,created:CreationDate}'],
     'hosted_zones_global': ['route53', 'list-hosted-zones', '--query', 'HostedZones[].{id:Id,name:Name,private:Config.PrivateZone}'],
+    'project_roles_global': ['iam', 'list-roles', '--query', 'Roles[?starts_with(RoleName, `commerce-aws-`)].{name:RoleName,arn:Arn,created:CreateDate}'],
+    'project_policies_global': ['iam', 'list-policies', '--scope', 'Local', '--query', 'Policies[?starts_with(PolicyName, `commerce-aws-`)].{name:PolicyName,arn:Arn,attached:AttachmentCount,boundaries:PermissionsBoundaryUsageCount}'],
+    'service_linked_roles_global': ['iam', 'list-roles', '--path-prefix', '/aws-service-role/', '--query', 'Roles[].{name:RoleName,arn:Arn,created:CreateDate}'],
 }
 
 
@@ -68,7 +72,12 @@ def main():
               'time_utc': timestamp.isoformat(), 'resources': {}, 'errors': {}}
     for name, operation in CHECKS.items():
         try:
-            report['resources'][name] = aws(args.profile, args.region, operation)
+            result = aws(args.profile, args.region, operation)
+            if name == 'kms_keys':
+                result = [aws(args.profile, args.region, ['kms', 'describe-key', '--key-id', key['id'],
+                          '--query', 'KeyMetadata.{id:KeyId,arn:Arn,state:KeyState,deletionDate:DeletionDate,manager:KeyManager,created:CreationDate}'])
+                          for key in result]
+            report['resources'][name] = result
         except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError) as failure:
             report['errors'][name] = type(failure).__name__
     report['complete'] = not report['errors']
