@@ -31,6 +31,11 @@ locals {
     { Sid    = "ProjectBudget", Effect = "Allow", Resource = ["arn:aws:budgets::${var.account_id}:budget/commerce-aws"],
       Action = ["budgets:ModifyBudget", "budgets:TagResource", "budgets:UntagResource"]
     },
+    # Route 53 does not support resource-level authorization for CreateHostedZone.
+    # Keep this single operation separate; the role cannot delete zones or change
+    # DNS records. Terraform's prevent_destroy retains the one reviewed public zone.
+    { Sid = "CreateReviewedPublicZone", Effect = "Allow", Resource = ["*"], Action = ["route53:CreateHostedZone"] },
+    { Sid = "TagHostedZones", Effect = "Allow", Resource = ["arn:aws:route53:::hostedzone/*"], Action = ["route53:ChangeTagsForResource"] },
     { Sid = "GitHubIdentityProvider", Effect = "Allow", Resource = ["arn:aws:iam::${var.account_id}:oidc-provider/token.actions.githubusercontent.com"], Action = [
       "iam:CreateOpenIDConnectProvider", "iam:DeleteOpenIDConnectProvider", "iam:TagOpenIDConnectProvider", "iam:UntagOpenIDConnectProvider",
       "iam:UpdateOpenIDConnectProviderThumbprint", "iam:AddClientIDToOpenIDConnectProvider", "iam:RemoveClientIDFromOpenIDConnectProvider"

@@ -23,9 +23,23 @@ run "scoped_mfa_bootstrap" {
   assert {
     condition = (
       alltrue([for statement in jsondecode(local.bootstrap_writes).Statement : alltrue([for action in statement.Action : !endswith(action, "*")])]) &&
-      alltrue([for statement in jsondecode(local.bootstrap_writes).Statement : alltrue([for resource in statement.Resource : resource != "*"])])
+      alltrue([for statement in jsondecode(local.bootstrap_writes).Statement : alltrue([for resource in statement.Resource :
+        resource != "*" || statement.Action == ["route53:CreateHostedZone"]
+      ])])
     )
-    error_message = "Bootstrap writes must use explicit actions and project-scoped resources."
+    error_message = "Bootstrap writes must use explicit actions and scoped resources, except Route 53 CreateHostedZone which requires Resource=*."
+  }
+  assert {
+    condition = (
+      jsondecode(local.bootstrap_writes).Statement[3].Action == ["route53:CreateHostedZone"] &&
+      jsondecode(local.bootstrap_writes).Statement[3].Resource == ["*"] &&
+      jsondecode(local.bootstrap_writes).Statement[4].Action == ["route53:ChangeTagsForResource"] &&
+      alltrue([for statement in jsondecode(local.bootstrap_writes).Statement :
+        !contains(statement.Action, "route53:DeleteHostedZone") &&
+        !contains(statement.Action, "route53:ChangeResourceRecordSets")
+      ])
+    )
+    error_message = "The bootstrap role may create and tag the retained DNS zone but must not delete zones or change DNS records."
   }
   assert {
     condition = (
@@ -37,7 +51,7 @@ run "scoped_mfa_bootstrap" {
   }
   assert {
     condition = (
-      jsondecode(local.bootstrap_writes).Statement[4].Condition.StringEquals["iam:PermissionsBoundary"] == local.boundary_arn &&
+      jsondecode(local.bootstrap_writes).Statement[6].Condition.StringEquals["iam:PermissionsBoundary"] == local.boundary_arn &&
       aws_iam_role.publisher.permissions_boundary == aws_iam_policy.publisher_boundary[0].arn &&
       alltrue([for statement in local.publisher_statements : alltrue([for action in statement.Action : startswith(action, "ecr:")])])
     )

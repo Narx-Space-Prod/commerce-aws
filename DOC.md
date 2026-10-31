@@ -20,12 +20,14 @@ are Synced and Healthy. Prometheus, Grafana and Alertmanager are running; the
 Alertmanager Slack secret is mounted. No test alert has been sent.
 
 The commerce Application is registered but the environment is deliberately disabled:
-`deploy/environment.yaml` has `enabled: false` and ingress disabled. There is no ALB,
-Route 53 hosted zone or ACM certificate in this account for the shop. The domain's
-DNS is currently managed in Cloudflare. `infrastructure/session/https.tf` can issue
-and validate a certificate only when an existing Route 53 zone is provided; it does
-not create that zone. Secure public HTTPS is needed before exercising login or
-checkout with real browser sessions. The Razorpay test credentials are not configured.
+`deploy/environment.yaml` has `enabled: false` and ingress disabled. The domain's
+DNS is currently managed in Cloudflare. The Terraform change in progress defines a
+retained Route 53 public zone for `narx.space`; it is not created until that change is
+merged and applied. There is no ALB, certificate, shop record or registrar delegation.
+Keep the existing Cloudflare nameservers until every current DNS record has been
+exported, recreated and verified in Route 53.
+Secure public HTTPS is needed before exercising login or checkout with real browser
+sessions. The Razorpay test credentials are not configured.
 
 The four immutable image digests in `deploy/release.json` exist in ECR and have
 previously verified signatures and SBOM attestations. `DELIVERY_ENABLED=false` means
@@ -224,10 +226,10 @@ ALB does not also belong in Terraform state: two writers would conflict.
 | Platform components and baseline resources | Argo platform Applications + pinned charts and reviewed Git values | Ordered cascading Application deletion through the helper before destroying EKS. |
 | Application Kubernetes objects | Argo CD Application + Helm chart and reviewed Git values | Stop reconciliation and remove the namespace during teardown. |
 | Manual database recovery snapshots | Snapshot exercise command, ownership tags and private inventory IDs | Intentionally retained only with a recorded purpose; delete when no longer needed. Snapshots are not automatically managed by session state. |
-| Optional ACM certificate/validation record | Terraform if explicitly enabled and authorised | Destroy through its owning state; externally created certificates are not currently managed automatically. |
-| Shop DNS record | Automation still pending, depending on the DNS provider | Do not create it as an undocumented console action; complete tracked automation before public ingress setup. |
+| `narx.space` public hosted zone | Terraform bootstrap state with `prevent_destroy` | Retained; keep the current Cloudflare delegation until all records are copied and verified. |
+| ACM certificate, validation and shop alias | Pending a reviewed follow-up after DNS record inventory and zone delegation | Keep shop ingress disabled until the certificate is issued and its ALB alias is reviewed. |
 | AWS service-linked roles | AWS service lifecycle, recorded in global inventory | May be shared across workloads; retain intentionally rather than deleting shared identities blindly. |
-| Existing human IAM user/group/MFA, domain/hosted zone | Pre-existing account/domain administration | Record in the baseline; these are outside the session state and must not be deleted during project teardown. |
+| Existing human IAM user/group/MFA, domain registration and registrar settings | Pre-existing account/domain administration | Keep outside Terraform; Terraform manages the Route 53 zone, not domain ownership or registrar account settings. |
 
 The temporary `commerce-aws-iam-setup` role was a recorded bootstrap exception and
 has been deleted. The persistent objects it created were imported into bootstrap
@@ -238,10 +240,12 @@ secrets pending deletion and KMS deletion status; absence of a successful query 
 never evidence of cleanup. This remains a scoped Mumbai/global inventory, not a
 guarantee that every AWS service and region has been audited.
 
-The initial snapshot exercise and final DNS record are current manual gaps.
-Before using them, implement the appropriate automation or record their explicit
-ownership and retained identifiers. An approval, inventory report or tag alone
-does not make a resource Terraform-managed.
+The initial snapshot exercise and DNS cutover remain pending. Do not change
+registrar nameservers as part of zone creation. First export Cloudflare's full DNS
+record set, recreate all required records in Route 53 through reviewed Terraform,
+verify the records, then change delegation at the domain registrar. The hosted
+zone's automatically assigned NS values are available from the bootstrap outputs.
+An approval, inventory report or tag alone does not make a resource Terraform-managed.
 
 Use a dedicated learning AWS account if available, MFA on the root account and an
 SSO/assumable role for normal work. Never create root access keys. Do not put AWS
@@ -474,8 +478,11 @@ This one-time migration is deliberate; Terraform cannot create its own backend
 before that bucket exists. Do not repeatedly create new state buckets.
 
 Check the budget in AWS Billing before starting the session. Review its recipients.
-The bucket and ECR repositories have `prevent_destroy`; session teardown does not
-delete them. Do not disable those guards to fix an unrelated Terraform error.
+The bucket, ECR repositories and planned public Route 53 zone have `prevent_destroy`;
+session teardown does not delete them. Do not disable those guards to fix an unrelated
+Terraform error. Route 53 charges $0.50 USD per public hosted zone per month for
+the first 25 zones, plus query charges where applicable; this is a persistent cost
+([pricing details](https://aws.amazon.com/route53/pricing/)).
 
 ## 3. Configure GitHub before enabling cloud workflows
 
@@ -561,13 +568,20 @@ as ordinary session resources. The preflight rejects existing workload roles tha
 lack their expected boundary. This is a guard, not protection against a trusted
 administrator changing access concurrently.
 
-This policy is prepared for the default fresh session. Optional Terraform-managed
-ACM/Route 53 and restoring a database snapshot need additional, separately scoped
-authorization before selecting those paths; manual ACM/external DNS remains an
-option. Do not broaden permissions to all services after an AccessDenied. Review
-the exact API, its resource and condition-key requirements, update the code through
-a PR and retry a reviewed plan. Offline validation and IAM simulation cannot prove
-a complete create/update/destroy cycle; live testing remains an activation gate.
+This policy is prepared for the default fresh session. Route 53 hosted-zone creation
+is included in bootstrap because the AWS authorization model requires `Resource: *`
+for `route53:CreateHostedZone`; that single permission cannot delete a hosted zone or
+change its records. Tagging is limited to hosted-zone resources. Keep this bootstrap
+role MFA-protected. Because it cannot rewrite its own inline policy, an AWS
+administrator must first add the exact Route 53 create and hosted-zone tagging
+statements from the reviewed `bootstrap-resources` policy to that role; the next
+Terraform bootstrap apply then records the policy configuration in state. Do not add
+Route 53 record-write permissions until a reviewed DNS migration plan exists. ACM
+and DNS-record changes require a later, separately scoped authorization. Do not
+broaden permissions to all services after an AccessDenied. Review the exact API, its
+resource and condition-key requirements, update the code through a PR and retry a
+reviewed plan. Offline validation and IAM simulation cannot prove a complete
+create/update/destroy cycle; live testing remains an activation gate.
 
 Administrator setup must create the eight boundary policies, six apply policies,
 the `commerce-aws-apply` role with the generated trust and two-hour maximum session,
