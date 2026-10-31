@@ -709,9 +709,47 @@ ownership, configuration and cleanup ordering. Live reconciliation, operator
 admission, node pod/IP capacity and memory fit still require the first EKS session;
 a single worker is a learning sizing target, not a verified capacity guarantee.
 Offline renders currently contain about 20 steady platform pods, before EKS
-add-ons and commerce pods. Check effective node `allocatable.pods`, pod IP capacity
-and resource requests before enabling commerce; the default node pod limit may
-require a reviewed CNI/node-sizing change. Do not enable workloads on assumed capacity.
+add-ons and commerce pods. Terraform therefore enables VPC CNI **prefix delegation**
+(`ENABLE_PREFIX_DELEGATION=true`, `WARM_PREFIX_TARGET=1`) before creating the node
+group. Instead of allocating individual secondary private IPs, CNI allocates `/28`
+prefixes with 16 addresses each. One spare prefix provides IP headroom for new pods.
+Network-policy enforcement stays enabled. This changes private IP allocation, not
+worker count, instance size or public IP allocation.
+
+The managed node group uses EKS-managed AL2023 with no AMI ID/user-data override;
+EKS calculates its recommended `maxPods` for the CNI configuration. Do not hard-code
+110 into a custom bootstrap script: that is a managed-node upper bound for this
+instance's vCPU class, not evidence that 110 application pods fit its CPU/memory.
+The default `m7i-flex.large` is Nitro-based. Recheck compatibility before changing
+instance type or supplying a custom AMI. The session creates fresh `/24` subnets;
+prefix allocation still requires contiguous free `/28` blocks. Existing/fragmented
+subnets need an IP reservation or a separately reviewed subnet migration.
+
+Follow [AWS's prefix-delegation procedure](https://docs.aws.amazon.com/eks/latest/userguide/cni-increase-ip-addresses-procedure.html)
+and [prefix-mode best practices](https://docs.aws.amazon.com/eks/latest/best-practices/prefix-mode-linux.html).
+This source change addresses IP capacity; live node limits, IP assignment and
+CPU/memory fit still require verification. After Terraform creates the session,
+check these before enabling commerce:
+
+```bash
+# All commands are read-only; use the dedicated AWS context.
+kubectl --context commerce-aws get nodes -o custom-columns=NAME:.metadata.name,PODS:.status.allocatable.pods,CPU:.status.allocatable.cpu,MEMORY:.status.allocatable.memory
+kubectl --context commerce-aws -n kube-system get daemonset aws-node -o jsonpath='{.spec.template.spec.containers[?(@.name=="aws-node")].env}'
+kubectl --context commerce-aws describe nodes
+kubectl --context commerce-aws get pods -A -o wide
+kubectl --context commerce-aws top nodes
+kubectl --context commerce-aws get events -A --field-selector reason=FailedScheduling
+```
+
+Confirm prefix mode is enabled, effective pod slots leave room for EKS add-ons,
+platform, application and rollout/HPA growth, and allocated requests fit. Inspect
+CNI logs if pods fail to obtain IPs (`InsufficientCidrBlocks` indicates subnet
+fragmentation). `top` needs a healthy metrics-server. A Ready node alone does not
+prove capacity. Prefix mode does not add CPU/RAM or make the single worker highly
+available. For an already running cluster, follow the AWS new-node-group migration
+procedure; merely changing the CNI setting does not guarantee existing nodes get
+new kubelet limits. Do not downgrade CNI below prefix-mode support.
+
 
 The helper generates/preserves Grafana credentials and prompts for a **dedicated**
 Slack incoming webhook with hidden input. It never copies credentials from the old
@@ -1061,7 +1099,7 @@ entry describes intent; successful validation or a real deployment is separate.
 | `infrastructure/bootstrap/tests/` | Mocked AWS tests of trust, boundaries and retained resources. Mock tests do not prove live AWS access or eventual consistency. |
 | `infrastructure/session/versions.tf`, `variables.tf` | Session providers, account allowlist and defaults/validation, including two AZs and explicit operator IPv4 `/32` addresses. |
 | `infrastructure/modules/network/main.tf` | `10.42.0.0/16` VPC, two public and two database subnets, internet gateway, public routes. Database access rules live in the data module; no NAT or SSH is created. |
-| `infrastructure/modules/eks/main.tf` | EKS control plane, managed nodes/launch template, API access, logging, add-ons, node/CNI/storage identities and pod-identity integrations. |
+| `infrastructure/modules/eks/main.tf` | EKS control plane, managed nodes/launch template, API access, logging, add-ons, prefix delegation before node creation, node/CNI/storage identities and pod-identity integrations. |
 | `infrastructure/modules/data/main.tf` | RDS, SQS + DLQ, generated passwords, runtime secret and separate publisher/worker/secrets identities. Session publisher name is distinct from retained ECR publisher. |
 | `infrastructure/modules/eks/ingress.tf` and `policies/load-balancer.json` | Load Balancer Controller identity and its pinned upstream IAM policy; the controller, not Terraform, creates the ALB after an enabled ingress. |
 | `infrastructure/session/https.tf` | Optional ACM certificate and DNS validation in an existing Route 53 zone; no domain is purchased. |

@@ -66,6 +66,23 @@ run "eks_security" {
     error_message = "Require IMDSv2 and prevent ordinary pods using node-role credentials."
   }
   assert {
+    condition = (
+      jsondecode(aws_eks_addon.cni.configuration_values).env.ENABLE_PREFIX_DELEGATION == "true" &&
+      jsondecode(aws_eks_addon.cni.configuration_values).env.WARM_PREFIX_TARGET == "1" &&
+      jsondecode(aws_eks_addon.cni.configuration_values).enableNetworkPolicy == "true" &&
+      jsondecode(aws_eks_addon.cni.configuration_values).env.NETWORK_POLICY_ENFORCING_MODE == "standard"
+    )
+    error_message = "Use prefix delegation for pod IP capacity while preserving VPC CNI network-policy enforcement."
+  }
+  assert {
+    condition = (
+      aws_launch_template.node.image_id == null && aws_launch_template.node.user_data == null &&
+      aws_eks_node_group.this.ami_type == "AL2023_x86_64_STANDARD" &&
+      aws_eks_node_group.this.scaling_config[0].desired_size == 1
+    )
+    error_message = "Keep the EKS-managed AL2023 bootstrap/maxPods calculation and one desired worker; custom AMIs need a separate capacity review."
+  }
+  assert {
     condition     = aws_eks_cluster.this.upgrade_policy[0].support_type == "STANDARD"
     error_message = "Avoid entering EKS extended support silently."
   }
