@@ -102,13 +102,14 @@ jobs:
           trap 'rm -f "$RUNNER_TEMP/session.tfplan"' EXIT
           terraform -chdir=infrastructure/session init -input=false -backend-config="bucket=$BUCKET" -backend-config="key=session/terraform.tfstate" -backend-config="region=$REGION" -backend-config=encrypt=true -backend-config=use_lockfile=true
           if [ "$OPERATION" = destroy ]; then
-            # Controllers must finish deleting their AWS resources before EKS disappears.
-            vpc=$(terraform -chdir=infrastructure/session output -raw vpc_id)
-            test -n "$vpc"
-            load_balancers=$(aws elbv2 describe-load-balancers --region "$REGION" --output json | jq --arg vpc "$vpc" '[.LoadBalancers[] | select(.VpcId == $vpc)] | length')
+            # A partial destroy may already have removed the VPC output from state.
+            # Discover tagged project VPCs from AWS so this preflight still works
+            # while cleaning up the remaining resources after such a failure.
+            project_vpcs=$(aws ec2 describe-vpcs --region "$REGION" --filters Name=tag:Project,Values=commerce-aws --output json | jq '[.Vpcs[].VpcId]')
+            load_balancers=$(aws elbv2 describe-load-balancers --region "$REGION" --output json | jq --argjson vpcs "$project_vpcs" '[.LoadBalancers[] | select(.VpcId as $vpc | $vpcs | index($vpc))] | length')
             volumes=$(aws ec2 describe-volumes --region "$REGION" --filters Name=tag:Project,Values=commerce-aws Name=tag:ManagedBy,Values=ebs-csi-driver --output json | jq '.Volumes | length')
             if [ "$load_balancers" != 0 ] || [ "$volumes" != 0 ]; then
-              echo "Teardown blocked: $load_balancers load balancer(s) in the session VPC and $volumes project CSI volume(s) remain. Complete Kubernetes cleanup and retry." >&2
+              echo "Teardown blocked: $load_balancers load balancer(s) in project VPCs and $volumes project CSI volume(s) remain. Complete Kubernetes cleanup and retry." >&2
               exit 1
             fi
           fi
