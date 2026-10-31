@@ -4,7 +4,8 @@ This is one application in one AWS **learning** environment. It reuses the Comme
 app so that your work focuses on infrastructure and operations. It does not depend
 on your laptop Kubernetes cluster or the previous six-repository delivery system.
 
-**Status snapshot, 31 October 2026:** The retained foundation exists: the private
+**Status snapshot, 31 October 2026:** The temporary IAM setup role has been deleted.
+The retained foundation exists: the private
 state bucket, four empty ECR repositories, budget, GitHub OIDC provider, publisher
 and planning identities, and the MFA bootstrap identity. Their configuration is
 tracked in Terraform. The release App's authentication test passed. A read-only
@@ -561,6 +562,14 @@ Code-S-12 approves Apply, which downloads
 the exact S3 object version and checks its SHA-256 before applying. Do not run a
 local apply concurrently. State locking also prevents concurrent state changes.
 
+Before the first deployment, choose `verify` to exercise both OIDC identities and
+the same protected approval gate. After approval, the second job verifies access to
+the versioned saved plan and existing workload-role boundaries, then exits before
+Terraform apply. It does not prove that resource creation, updates, optional DNS,
+database restore or teardown permissions are sufficient. It still creates a private
+saved plan and acquires/releases its state lock. Keep the enable flag off between
+intentionally dispatched sessions.
+
 Subscribe/confirm the SNS email: unconfirmed subscriptions do not deliver alarms.
 
 ## 5. Install the platform and private administration tools
@@ -817,8 +826,8 @@ one giant script that tries to build, provision, deploy and recover everything.
 
 The foundation, workload boundaries and apply identity are created and tracked.
 Release App authentication and the GitHub OIDC plan-only workflow have passed.
-Still needed: remove the temporary `commerce-aws-iam-setup` administrator setup role;
-validate the apply identity and GitHub infrastructure apply workflow against AWS;
+The temporary `commerce-aws-iam-setup` administrator role has been deleted.
+Still needed: validate the apply identity and infrastructure workflow against AWS;
 review cost and the session plan; apply with approval; install the platform; configure
 ACM/DNS/payment sandbox; verify signed releases; and perform real deployment, alert,
 restore and teardown exercises. Record actual results rather than describing prepared
