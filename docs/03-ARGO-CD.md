@@ -31,7 +31,7 @@ flowchart LR
 
 Terraform owns AWS primitives and IAM: VPC/EKS, node group, RDS, queues, secrets, ECR, Pod Identity role associations and IAM permissions. Argo owns Kubernetes manifests and Helm releases. Kubernetes controllers own their resulting objects: for example, the AWS Load Balancer Controller creates an ALB from a Kubernetes Ingress, while EBS CSI creates an EBS volume for a PVC. Do not make Terraform and Argo both authoritative for the same object.
 
-**The current lab is not live.** `deploy/environment.yaml` sets `enabled:false` and ingress disabled. The last destroy removed EKS and monitoring volumes but left eight workload IAM roles after a permission error. Argo commands below are for a future/recreated cluster and should not be run against a different kube context. Current AWS runtime inventory has not been refreshed.
+**A running lab has not been confirmed.** `deploy/environment.yaml` sets `enabled:false` and ingress disabled. The last confirmed destroy removed EKS and monitoring volumes but left eight workload IAM roles after a permission error; AWS has not been re-inventoried for this documentation update. The environment file still contains former runtime/database secret ARNs, and `deploy/platform/ingress-values.yaml` contains the former VPC ID. After recreating AWS resources, run `scripts/platform.sh configure`, inspect the generated identifiers, update them through a PR, and only then install Argo. Commands below are for a recreated project cluster and should not be run against a different kube context.
 
 ## 3.3 The YAML map
 
@@ -70,7 +70,8 @@ Prerequisites: a real, running project cluster; matching AWS profile and account
 bash scripts/platform.sh prepare
 
 # Configure kube context from current Terraform outputs, then check identity/context.
-aws sts get-caller-identity --profile YOUR_PROFILE
+export AWS_PROFILE=YOUR_PROFILE
+aws sts get-caller-identity
 aws eks update-kubeconfig --name commerce-aws --region ap-south-1 --alias commerce-aws
 kubectl config current-context
 kubectl --context commerce-aws get nodes
@@ -169,3 +170,133 @@ python3 scripts/check_chart.py
 ```
 
 Rendering is not deployment. Validation should catch API/schema errors; only Argo reconciliation against the correct cluster changes live objects.
+
+## 3.9 Read an Argo CD Application as a contract
+
+Take the `commerce` Application in `deploy/argocd.yaml`. Its fields answer five questions:
+
+```yaml
+spec:
+  project: commerce
+  source:
+    repoURL: https://github.com/Narx-Space-Prod/commerce-aws.git
+    targetRevision: main
+    path: deploy/chart
+    helm:
+      valueFiles: [../environment.yaml, ../release.json]
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: commerce
+```
+
+- `project` is the policy envelope: allowed repositories, destinations and resource kinds.
+- `repoURL` identifies the Git source. `targetRevision: main` means Argo follows the protected branch's current commit; a tagged revision would pin it differently.
+- `path` selects the Helm chart directory. It is not a URL to a live cluster.
+- `valueFiles` are relative to the chart source path. Helm combines chart defaults (`deploy/chart/values.yaml`) with the listed files in order; later values override earlier keys. The environment file overrides environment settings, and release JSON supplies image digests.
+- `destination.server` points to the local Kubernetes API from inside the cluster. `namespace` scopes namespaced resources; cluster-scoped resources need explicit AppProject permission.
+
+`ignoreDifferences` for frontend/catalogue replica counts handles Kubernetes HPA ownership: Argo should compare all other Deployment fields but not overwrite the replica field the HPA changes. `RespectIgnoreDifferences=true` makes sync honor those declared ignore rules.
+
+`syncPolicy.automated.prune` deletes formerly managed objects removed from render. `selfHeal` repairs live drift. `allowEmpty:false` blocks a chart that suddenly renders nothing. `ServerSideApply=true` uses Kubernetes server-side apply field managers, useful for large/manifold resources but requiring care when two managers own the same field. `PruneLast=true` removes stale resources after applying desired ones. Retry backoff limits repeated API attempts; it does not fix permanent configuration errors.
+
+The app chart's `.Values.enabled` gate is a second safety layer. When false, templates render no commerce objects. The current environment uses false, and the CI render check asserts the disabled chart is empty. When true, `workloads.yaml` additionally refuses missing image names or mutable tags.
+
+## 3.10 Read the platform root and six child apps
+
+`platform-root.yaml` has two documents separated by `---`:
+
+1. **AppProject `platform`:** allowlists the commerce Git repository and upstream chart repositories, a short list of destination namespaces, and cluster-scoped resource kinds required by controllers. Namespace resources within approved destinations are allowed. This makes platform installation privileged but constrained.
+2. **Application `platform-root`:** watches `deploy/platform/apps` in the commerce Git repo. It has automated prune/self-heal but deliberately no resource finalizer. It creates child Application objects; child Applications manage their own platform Helm charts/resources.
+
+`applications.yaml` has six Applications. It uses sync-wave annotations to order dependencies:
+
+- `platform-baseline`, wave `-20`: StorageClass, namespaces, pod-security labels, quota. Early namespace/storage foundation.
+- `platform-cert-manager`, wave `-10`: certificate controller and CRDs. Must exist before chart components that consume certificate-related CRDs/webhooks.
+- `platform-external-secrets`: installs External Secrets Operator, destination `external-secrets`; commerce ExternalSecret resources cannot reconcile until its CRDs/controller exist.
+- `platform-metrics-server`: supplies Kubernetes resource metrics for `kubectl top` and HPA CPU metrics, destination `kube-system`.
+- `platform-ingress`: AWS Load Balancer Controller, `kube-system`. This controller watches Ingress and creates ALB resources; IAM role/POD identity is Terraform-owned.
+- `platform-monitoring`: kube-prometheus-stack in `monitoring`, which installs CRDs like ServiceMonitor/PrometheusRule and provisions PVCs.
+
+A sync wave is ordering metadata on Argo resources. It does not guarantee that an external cloud dependency is ready; the bootstrap script additionally waits for child Applications to report Synced/Healthy and for the required CRDs to be Established before applying commerce.
+
+The controller charts are pinned at versions in the YAML. Monitoring and ingress use **multi-source Applications**: the Helm chart comes from an upstream chart repo while `$values/...` comes from the Git repo named by `ref: values`. This avoids copying vendor charts into the application repo while keeping values reviewed in Git. When changing a chart version, review upstream breaking changes, CRDs, values schema, resource requests and rollback behavior.
+
+The `ignoreDifferences` blocks for controller webhook CA bundles avoid Argo fighting a CA bundle injected by cert-manager/controller startup. They do not ignore the entire webhook resource. `SkipDryRunOnMissingResource=true` is used for CRD-first installs, where an API kind may not exist during an initial dry run; it should not be used indiscriminately because it can hide real schema mistakes.
+
+## 3.11 Helm chart source tour: rendered workload behavior
+
+`deploy/chart/Chart.yaml` names a Helm v2 application chart, not a Helm release. `values.yaml` supplies defaults. Templates are Go templates: `{{ ... }}` evaluates expressions; `{{- if ... }}` conditionally emits YAML; `range` loops over services; `required` and `fail` stop rendering when a critical value is invalid.
+
+### `templates/workloads.yaml`
+
+This template loops over six logical processes: frontend, catalogue, cart, orders API, publisher and worker. It resolves each `service.image` key into `release.images`, then regex-checks for an account-scoped private ECR URL containing `@sha256:<64 hex>`. This blocks `latest`, raw tags, foreign registries and malformed release records at render time.
+
+For each process it emits a dedicated ServiceAccount, ClusterIP Service and Deployment. Pod and container security settings enforce non-root UID 10001, RuntimeDefault seccomp, no privilege escalation, read-only root filesystem, dropped Linux capabilities, bounded `/tmp`, startup/readiness/liveness probes, requests/limits and graceful termination. `automountServiceAccountToken:false` prevents a pod from receiving the default Kubernetes API token when it does not need Kubernetes API access.
+
+A Deployment selector must exactly match pod labels; Kubernetes uses that selector to maintain the ReplicaSet. `revisionHistoryLimit:3` retains a few prior ReplicaSets. `progressDeadlineSeconds:300` reports a rollout that failed to progress. RollingUpdate `maxSurge:1, maxUnavailable:0` starts one extra pod before taking an old one away; it protects availability only if capacity/quota can fit the surge pod. A one-node cluster can be resource constrained, so watch Pending pods during rollout.
+
+The HPA is emitted only for frontend and catalogue. It targets CPU utilization 70%, minimum one replica, maximum `autoscaling.maxReplicas` (two), with a five-minute scale-down stabilization window. It requires metrics-server and CPU requests (utilization is relative to requested CPU). An HPA does not add worker nodes; if no node capacity exists, extra replicas remain Pending.
+
+### `templates/secrets.yaml` and `database-bootstrap.yaml`
+
+The `SecretStore` identifies AWS Secrets Manager and region. `ExternalSecret` resources tell External Secrets Operator which remote ARN/property to fetch, how often to refresh, and which Kubernetes Secret it owns. Separate resources are used for runtime application values and the RDS master password. The source file has only ARNs, not payloads.
+
+The database bootstrap template includes the RDS global CA bundle as a ConfigMap and a Sync hook Job. The SecretStore/ExternalSecret resources are ordered at wave `-2`; the hook Job is wave `-1`, so it is submitted later. That ordering alone does not prove External Secrets Operator has finished fetching values—the job's Secret references are the actual runtime dependency. The job uses a pinned PostgreSQL client image, a non-root user, TLS `verify-full`, `ON_ERROR_STOP`, bounded retries/time and a short deadline. It idempotently creates the `commerce_app` role if absent, resets its password from the app runtime secret, grants connect and schema privileges. App pods then use the restricted app user; only this setup job sees the master password. Hook deletion policy removes successful old jobs before the next creation and after success.
+
+If the ExternalSecret cannot sync or is not ready before the hook starts, the bootstrap Job fails; this is safer than starting an app without its DB credential. Check the ExternalSecret conditions and target Secret, fix IAM/secret/identity first, then let Argo retry. Do not use `kubectl create secret` with a literal password as a shortcut.
+
+### `templates/redis.yaml`
+
+Redis is a single-replica StatefulSet with a stable service identity and one 1Gi gp3 PVC. Append-only persistence protects against pod restart while the volume remains. `--maxmemory 64mb --maxmemory-policy noeviction` makes memory behavior explicit; writes can fail at the memory limit rather than silently evicting session data. Redis stores cart/session data and is not the durable order/account database. The PVC provisions a separate EBS volume; persistent disk does not make Redis itself highly available.
+
+### `templates/network.yaml`
+
+The first NetworkPolicy selects all `app=commerce` pods and declares both ingress and egress policy types, so unmatched traffic is denied (assuming the cluster CNI enforces policy). It permits same-app pod traffic, monitoring scrape ingress, cluster DNS, VPC database TCP/5432, outbound HTTPS, and the EKS Pod Identity agent endpoint. The second rule allows VPC-originated traffic to frontend port 8080 for the ALB target health/data path.
+
+NetworkPolicy is a pod-level control, not a substitute for VPC security groups, IAM, TLS or application authentication. DNS labels and destination CIDRs must correspond to actual service placement. Broad egress HTTPS is a known compromise for external endpoints; a hardened service could use controlled egress endpoints/proxies.
+
+### `templates/ingress.yaml`
+
+The template renders only if both app and ingress are enabled. It fails unless `publicOrigin` exactly equals `https://<ingress.host>` and a certificate ARN is supplied. ALB annotations request internet-facing scheme, pod-IP targets, HTTP and HTTPS listeners, HTTP-to-HTTPS redirect, TLS policy, health path and project tags. The rule routes host `/` to the frontend ClusterIP Service on port 80. Creating this Kubernetes object asks the controller to create AWS load balancer resources; it does not mean Terraform directly owns the ALB.
+
+### `templates/monitoring.yaml`
+
+It emits a ServiceMonitor and PrometheusRule only when app workloads are enabled. The ServiceMonitor selects `app=commerce` Services and scrapes the named `http` service port every 30 seconds. A relabel rule changes the metrics path for `orders`, `publisher` and `worker` from `/metrics` to Spring's `/actuator/prometheus` path. The `release: monitoring` label must match the monitoring chart's ServiceMonitor selector. The rule object has the same label convention so Prometheus Operator loads it.
+
+## 3.12 Render locally and understand the output
+
+Rendering uses chart defaults plus environment and release files. It does not connect to AWS or a cluster:
+
+```bash
+helm lint --strict deploy/chart -f deploy/environment.yaml -f deploy/release.json
+helm template commerce deploy/chart --namespace commerce \
+  -f deploy/environment.yaml -f deploy/release.json
+```
+
+Because current environment is disabled, expected output is empty. A safe enabled fixture is used by CI and `scripts/check_chart.py`; do not flip the real environment file merely to see output. You can use the example config and fake digest from the validator in a temporary file. Then inspect object kinds, names, labels/selectors, service target ports, probes, security contexts, image references and HPA target. `helm template` output is the concrete YAML Argo will submit after rendering; debugging the output is often easier than staring at template syntax.
+
+A useful reading exercise: locate `.Values.enabled`, then search every template for its guard. Predict which objects appear for enabled app/no ingress, then enabled app/ingress. Verify CI's enabled fixture includes Ingress, NetworkPolicy, ExternalSecret, ServiceMonitor and HPA while the actual disabled render is empty.
+
+## 3.13 Interpret Argo status precisely
+
+- `Unknown`: Argo has not completed comparison/health evaluation or cannot read status.
+- `OutOfSync`: rendered desired object differs from live object. Inspect the diff. Could be intended new release, HPA-owned replica count, manual drift, controller mutation or a failed prior sync.
+- `Synced + Progressing`: desired manifests applied, but a Deployment/Job/LoadBalancer/CRD is not ready yet.
+- `Synced + Healthy`: manifests match and supported health checks pass. It still does not prove login, payment, email, SQS delivery or full customer journey works.
+- `Degraded`: one or more resources report health failure; inspect the exact resource and controller events.
+- `ComparisonError`: Argo could not render/read desired state (repo credentials, YAML/Helm error, chart repo timeout, unknown API kind).
+- `SyncFailed`: apply failed (admission, RBAC, quota, CRD or cloud controller dependency).
+
+First find the exact revision and resource condition, then inspect controller logs/events. Avoid repeated Sync clicks if the root cause is a deterministic render/permission error. Fix desired configuration through a PR and allow the next reconciliation.
+
+## 3.14 Safe hands-on Argo practice
+
+When a disposable cluster is active:
+
+1. Use `platform.sh prepare` and `configure`; explain why these steps do not create cluster resources.
+2. Verify the current context endpoint equals `aws eks describe-cluster` output before install.
+3. Install Argo, list the parent and six child Applications, and explain which controller manages each.
+4. Make a harmless values change in a feature branch and render locally. Merge through PR, observe Argo's target revision/diff, and confirm health.
+5. Manually change a noncritical managed label in a disposable namespace; observe self-heal. Do not edit IAM/Ingress/production resources as a drift demo.
+6. Change a chart value in Git and observe auto-sync. Restore it with another commit to practice Git-based rollback.
+7. Inspect PVCs and controller-created AWS resources before teardown. Run ordered cleanup only on the disposable cluster, then inventory cloud leftovers.
