@@ -64,13 +64,15 @@ def main():
     args = parser.parse_args()
     if not re.fullmatch(r'[0-9]{12}', args.account):
         parser.error('Expected a 12-digit AWS account ID')
+    print('Verifying AWS account identity...', flush=True)
     identity = aws(args.profile, args.region, ['sts', 'get-caller-identity'])
     if identity['Account'] != args.account:
         raise SystemExit('Account mismatch: inventory stopped before resource queries')
     timestamp = dt.datetime.now(dt.timezone.utc)
     report = {'account': args.account, 'region': args.region, 'identity_arn': identity['Arn'],
               'time_utc': timestamp.isoformat(), 'resources': {}, 'errors': {}}
-    for name, operation in CHECKS.items():
+    for index, (name, operation) in enumerate(CHECKS.items(), 1):
+        print(f'[{index}/{len(CHECKS)}] Checking {name}...', flush=True)
         try:
             result = aws(args.profile, args.region, operation)
             if name == 'kms_keys':
