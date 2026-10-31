@@ -5,7 +5,7 @@ locals {
     Effect = "Allow", Action = "sts:AssumeRoleWithWebIdentity", Principal = { Federated = local.provider_arn },
     Condition = { StringEquals = {
       "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com",
-      "token.actions.githubusercontent.com:sub" = "repo:${local.repository}:environment:infrastructure-plan",
+      "token.actions.githubusercontent.com:sub" = "repo:${local.repository_subject}:environment:infrastructure-plan",
       "token.actions.githubusercontent.com:ref" = "refs/heads/main"
     } }
   }] })

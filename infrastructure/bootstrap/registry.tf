@@ -10,10 +10,11 @@ variable "existing_github_oidc_provider_arn" {
   default = null
 }
 locals {
-  repository   = "Narx-Space-Prod/commerce-aws"
-  provider_arn = coalesce(var.existing_github_oidc_provider_arn, try(aws_iam_openid_connect_provider.github[0].arn, null))
-  ecr_names    = toset(["frontend", "catalogue", "orders", "cart"])
-  ecr_arns     = [for name in sort(tolist(local.ecr_names)) : "arn:aws:ecr:${var.aws_region}:${var.account_id}:repository/commerce-aws/${name}"]
+  repository         = "Narx-Space-Prod/commerce-aws"
+  repository_subject = "Narx-Space-Prod@346206471/commerce-aws@1439227210"
+  provider_arn       = coalesce(var.existing_github_oidc_provider_arn, try(aws_iam_openid_connect_provider.github[0].arn, null))
+  ecr_names          = toset(["frontend", "catalogue", "orders", "cart"])
+  ecr_arns           = [for name in sort(tolist(local.ecr_names)) : "arn:aws:ecr:${var.aws_region}:${var.account_id}:repository/commerce-aws/${name}"]
   publisher_statements = [
     { Effect = "Allow", Action = ["ecr:GetAuthorizationToken"], Resource = ["*"] },
     { Effect = "Allow", Resource = local.ecr_arns, Action = [
@@ -43,7 +44,7 @@ resource "aws_iam_role" "publisher" {
     Effect = "Allow", Action = "sts:AssumeRoleWithWebIdentity", Principal = { Federated = local.provider_arn },
     Condition = { StringEquals = {
       "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com",
-      "token.actions.githubusercontent.com:sub" = "repo:${local.repository}:environment:registry-release"
+      "token.actions.githubusercontent.com:sub" = "repo:${local.repository_subject}:environment:registry-release"
     } }
   }] })
 }
