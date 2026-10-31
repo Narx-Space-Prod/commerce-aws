@@ -39,12 +39,15 @@ with tempfile.TemporaryDirectory() as directory:
     assert {obj['kind'] for obj in objects} >= {'Ingress', 'NetworkPolicy', 'ExternalSecret', 'ServiceMonitor', 'HorizontalPodAutoscaler'}
     manifest = Path(directory) / 'rendered.yaml'
     manifest.write_text(rendered)
+    # The GitOps baseline also contains standard Kubernetes resources.
+    baseline = Path('deploy/platform/resources/baseline.yaml')
+    baseline_objects = [item for item in yaml.safe_load_all(baseline.read_text()) if item]
     # Cache each pinned schema once, with a bounded HTTP timeout. Do not let every
     # resource independently fetch the same schema through an unbounded client.
     schemas = Path('.work/schemas')
     schemas.mkdir(parents=True, exist_ok=True)
     custom = {'SecretStore', 'ExternalSecret', 'ServiceMonitor', 'PrometheusRule'}
-    for obj in objects + [item for item in yaml.safe_load_all(actual) if item]:
+    for obj in objects + [item for item in yaml.safe_load_all(actual) if item] + baseline_objects:
         if obj['kind'] in custom:
             continue
         parts = obj['apiVersion'].split('/')
@@ -61,7 +64,7 @@ with tempfile.TemporaryDirectory() as directory:
     # rendering/structural assertions here; live CRD admission is part of AWS activation.
     run('kubeconform', '-strict', '-summary', '-kubernetes-version', '1.35.0',
         '-schema-location', str(schemas / '{{.ResourceKind}}{{.KindSuffix}}.json'),
-        '-skip', 'SecretStore,ExternalSecret,ServiceMonitor,PrometheusRule', str(manifest), str(actual_path))
+        '-skip', 'SecretStore,ExternalSecret,ServiceMonitor,PrometheusRule', str(manifest), str(actual_path), str(baseline))
     missing = subprocess.run(['helm', 'template', 'commerce', 'deploy/chart', '--set', 'enabled=true'], capture_output=True)
     assert missing.returncode != 0, 'Missing release was incorrectly accepted'
     disabled = subprocess.check_output(['helm', 'template', 'commerce', 'deploy/chart'], text=True)

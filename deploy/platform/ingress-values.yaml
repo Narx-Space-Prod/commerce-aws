@@ -1,0 +1,7 @@
+# Replace vpcId from Terraform outputs through a reviewed configuration PR.
+clusterName: commerce-aws
+region: ap-south-1
+vpcId: ''
+serviceAccount: {name: aws-load-balancer-controller}
+defaultTags: {Project: commerce-aws, Environment: learning}
+enableCertManager: true
