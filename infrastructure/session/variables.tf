@@ -46,7 +46,7 @@ variable "kubernetes_version" {
 }
 variable "instance_type" {
   type    = string
-  default = "t3.large"
+  default = "m7i-flex.large"
 }
 variable "existing_backup_snapshot" {
   description = "Optional manual RDS snapshot identifier for a restore exercise or a new session."

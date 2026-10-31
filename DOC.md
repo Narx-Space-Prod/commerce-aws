@@ -106,12 +106,21 @@ Changes to the source repositories do **not** automatically appear in this snaps
 
 ## Cost choices and their tradeoffs
 
-The default session uses one `t3.large` x86 worker and one `db.t4g.micro` RDS
+The default session uses one `m7i-flex.large` x86 worker and one `db.t4g.micro` RDS
 instance. Check current regional prices before applying; these defaults are a
 capacity starting point, not a cost estimate. The control plane, worker, public
 IPv4, RDS, ALB/LCUs, EBS, logs, secrets, images, snapshots, DNS and data transfer can
 all contribute to the bill. The alarm-notification KMS key and requests also have
 charges. CPU credits can also matter for burstable instances.
+
+On 31 October 2026, AWS's API marked `m7i-flex.large` Free Tier eligible and
+available in the selected Mumbai AZs, with 2 vCPU and 8 GiB memory. The previous
+`t3.large` choice was not marked eligible. The checked Linux/shared rate for the
+new worker is USD 0.10075/hour. Eligibility does not make resource usage free:
+usage can consume credits, and service availability still depends on the account.
+The revised core estimate is approximately USD 0.28/hour, or USD 0.84 for three
+hours including an assumed ALB/one LCU. Taxes, logs, API calls, data transfer,
+extra/surge nodes and retained storage/snapshots can add cost; this is not a cap.
 
 * EKS requires two AZ subnets. Only the first AZ has a worker and database instance.
 * The worker has a public IP but no SSH rule or internet-open application NodePort.
@@ -825,9 +834,11 @@ one giant script that tries to build, provision, deploy and recover everything.
 ## What remains before calling the environment operational
 
 The foundation, workload boundaries and apply identity are created and tracked.
-Release App authentication and the GitHub OIDC plan-only workflow have passed.
+Release App authentication and both OIDC identities passed the protected
+verification workflow, including saved-plan access and boundary reads. This did
+not execute Terraform apply or prove resource lifecycle permissions.
 The temporary `commerce-aws-iam-setup` administrator role has been deleted.
-Still needed: validate the apply identity and infrastructure workflow against AWS;
+Still needed: complete a controlled infrastructure create/update/destroy test;
 review cost and the session plan; apply with approval; install the platform; configure
 ACM/DNS/payment sandbox; verify signed releases; and perform real deployment, alert,
 restore and teardown exercises. Record actual results rather than describing prepared
