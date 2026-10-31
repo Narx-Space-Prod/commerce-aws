@@ -23,3 +23,9 @@ variable "public_dns_zone_name" {
     error_message = "This bootstrap stack is authorized to manage only the narx.space public zone."
   }
 }
+
+variable "enable_production_subzone" {
+  description = "Create and delegate prod.narx.space to Route 53 while Cloudflare remains authoritative for narx.space."
+  type        = bool
+  default     = false
+}

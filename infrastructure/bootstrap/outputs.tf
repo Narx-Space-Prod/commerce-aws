@@ -14,6 +14,21 @@ output "public_dns_zone_id" {
 }
 
 output "public_dns_name_servers" {
-  description = "Route 53 name servers; use only after all existing DNS records have been migrated and verified."
+  description = "Route 53 name servers for the narx.space staging zone; this zone is not delegated while Cloudflare Tunnel hostnames remain active."
   value       = aws_route53_zone.public.name_servers
+}
+
+output "production_dns_zone_id" {
+  description = "Route 53 hosted-zone ID for prod.narx.space, when the production child zone is enabled."
+  value       = try(aws_route53_zone.production[0].zone_id, null)
+}
+
+output "production_dns_name_servers" {
+  description = "Route 53 name servers delegated from Cloudflare for prod.narx.space, when enabled."
+  value       = try(aws_route53_zone.production[0].name_servers, null)
+}
+
+output "production_shop_hostname" {
+  description = "Planned AWS storefront hostname; no shop record is created by the DNS delegation."
+  value       = var.enable_production_subzone ? "shop.prod.narx.space" : null
 }

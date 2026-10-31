@@ -6,6 +6,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 6.69.0"
     }
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "= 5.28.1"
+    }
   }
 }
 
@@ -22,3 +26,6 @@ provider "aws" {
     }
   }
 }
+
+# Cloudflare credentials are supplied at apply time through CLOUDFLARE_API_TOKEN.
+provider "cloudflare" {}
