@@ -118,9 +118,18 @@ resource "aws_eks_addon" "identity" {
   addon_name   = "eks-pod-identity-agent"
 }
 resource "aws_eks_addon" "cni" {
-  cluster_name         = aws_eks_cluster.this.name
-  addon_name           = "vpc-cni"
-  configuration_values = jsonencode({ enableNetworkPolicy = "true", env = { NETWORK_POLICY_ENFORCING_MODE = "standard" } })
+  cluster_name = aws_eks_cluster.this.name
+  addon_name   = "vpc-cni"
+  # Enable prefix mode before creating nodes. Without an AMI ID override in our
+  # launch template, EKS calculates the managed node group's maxPods automatically.
+  configuration_values = jsonencode({
+    enableNetworkPolicy = "true"
+    env = {
+      NETWORK_POLICY_ENFORCING_MODE = "standard"
+      ENABLE_PREFIX_DELEGATION      = "true"
+      WARM_PREFIX_TARGET            = "1"
+    }
+  })
   pod_identity_association {
     role_arn        = aws_iam_role.cni.arn
     service_account = "aws-node"
