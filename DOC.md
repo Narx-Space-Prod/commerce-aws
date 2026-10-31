@@ -22,7 +22,9 @@ DNS/public HTTPS is deliberately deferred. No Route 53 zone, certificate or shop
 record has been created for this project. Keep ingress disabled during initial
 private infrastructure/platform exercises. The complete secure-cookie login/payment
 journey still requires a suitable HTTPS access path before it can be verified.
-Prepare the first image release before starting paid infrastructure.
+Infrastructure, platform bootstrap and image publication are independent lifecycles.
+Images can be prepared before a session, but they are not a prerequisite for EKS
+or platform installation.
 GitHub variables `DELIVERY_ENABLED=false` and `INFRA_ENABLED=false` keep cloud jobs disabled.
 `deploy/environment.yaml` also starts disabled. Do not claim the AWS end-to-end
 deployment has passed until you have performed the activation exercises below.
@@ -114,6 +116,13 @@ have not been deleted or replaced. Keep them until this project works independen
 Changes to the source repositories do **not** automatically appear in this snapshot.
 
 ## Cost choices and their tradeoffs
+
+The design priority is production-style change control, ownership, security and
+repeatable operations. Cost choices adjust capacity, availability and retention;
+they must not create artificial dependencies between infrastructure and application
+pipelines. Provisioning EKS and installing its platform does not require a completed
+application image release. Application CI can publish independently of cluster
+existence. Preparing charts or images early is optional scheduling, not a gate.
 
 The default session uses one `m7i-flex.large` x86 worker and one `db.t4g.micro` RDS
 instance. Check current regional prices before applying; these defaults are a
@@ -633,6 +642,11 @@ The helper checks the AWS account, cluster name and actual API endpoint. It targ
 the dedicated `commerce-aws` context, never your local kind cluster:
 
 ```bash
+# Optional: download and validate pinned platform charts before a session.
+bash scripts/platform.sh prepare
+# After infrastructure exists, prepare non-secret configuration for a reviewed PR.
+bash scripts/platform.sh configure
+# Install/reconcile platform tools, with account and cluster checks.
 bash scripts/platform.sh install
 kubectl --context commerce-aws get nodes
 kubectl --context commerce-aws get pods -A
@@ -644,6 +658,18 @@ kube-prometheus-stack and Argo CD via Helm. This is a deliberate split: Terrafor
 owns AWS, Helm owns platform releases, Argo CD owns the application. Do not let a
 second controller manage the same objects. Platform upgrades change versions/values
 through a PR, then rerun this helper; Argo does not upgrade the platform tools.
+
+`prepare` caches the pinned platform charts and validates their archive metadata;
+it does not query AWS or Kubernetes and does not require an application release.
+`configure` reads the root Terraform outputs and writes a disabled environment
+candidate to ignored `.work/environment.generated.json`. Review it through a PR
+before copying it to `deploy/environment.yaml`; `https://localhost` is a placeholder,
+not an already configured TLS endpoint. No secret values enter this candidate.
+Install waits for ready nodes, uses atomic Helm upgrades, checks operator CRDs and
+Argo server readiness, then applies the existing Application. Live cluster behaviour
+still needs a real test. Helm releases remain owned by the helper in the current
+implementation; moving their ongoing reconciliation into Argo CD is a separate
+planned ownership change, not something this helper silently implements.
 
 The helper generates/preserves Grafana credentials and prompts for a **dedicated**
 Slack incoming webhook with hidden input. It never copies credentials from the old
@@ -661,6 +687,13 @@ Open Grafana at `http://localhost:3000` and Argo at `https://localhost:8443`.
 Retrieve initial login credentials locally from the scoped Kubernetes secrets;
 never paste them into a ticket/chat or commit them. Change initial admin passwords
 before sharing access. Existing secrets are preserved rather than reset on each run.
+For noninteractive bootstrap, a protected runner/secret-manager injection can supply
+`SLACK_WEBHOOK` in the helper process environment. The code does not print it or
+put it in command arguments. The project has not configured a persistent source
+for this input yet; on a fresh cluster it otherwise asks through a hidden prompt.
+Secret lookup errors stop installation, and create-only writes prevent overwriting
+an existing secret during a race. Rotate credentials through a deliberate operation.
+
 
 Default Grafana dashboards cover Kubernetes/node/workload resources. The app's
 ServiceMonitor scrapes all six processes; use Explore for request rates, latency,
