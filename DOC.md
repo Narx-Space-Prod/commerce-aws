@@ -4,36 +4,36 @@ This is one application in one AWS **learning** environment. It reuses the Comme
 app so that your work focuses on infrastructure and operations. It does not depend
 on your laptop Kubernetes cluster or the previous six-repository delivery system.
 
-**Status snapshot, 31 October 2026:** The retained foundation and first signed ECR
-release exist and are tracked in Terraform. The temporary IAM setup role was deleted.
-Protected infrastructure Apply run **41202931403** was approved by Code-S-12 and
-created an active EKS 1.35 control plane, an available private PostgreSQL database,
-and supporting resources. It then **failed before creating a worker**: the pipeline
-lacked Secrets Manager `GetResourcePolicy` and EC2 launch-template launch permissions.
-Terraform saved 54 managed instances, including a tainted runtime-secret resource
-whose post-create read failed. The secret has no application consumers yet.
-The source includes scoped permission fixes; an AWS account administrator must
-publish them to the existing pipeline IAM policies before a newly reviewed retry.
-Do not replay the old saved plan or claim the deployment succeeded.
+**Status snapshot, 31 October 2026:** The protected AWS infrastructure Apply
+run **41211513095** completed successfully after recovery of the earlier partial
+apply. Its reviewed plan reconciled the existing Terraform state, created the
+missing worker and EKS add-ons, and replaced the tainted runtime-secret resource.
+The final apply reported 6 added, 0 changed and 1 destroyed; the destroyed object
+was the tainted secret instance. Terraform now manages 59 session resources.
 
-The Kubernetes API is reachable with the MFA operator role, but there are no workers,
-no Argo/platform installation and no application deployment yet. These AWS resources
-continue accruing charges while permission recovery is pending. First creation was
-partially exercised; complete creation, update and teardown are still unverified.
-GitHub OIDC protected planning/identity tests and release-App authentication passed.
-The four images from publication run 41198659786 have independently verified signatures
-and CycloneDX attestations, using the exact reusable `image.yml` identity on main.
-DNS/public HTTPS is deliberately deferred. No Route 53 zone, certificate or shop DNS
-record has been created for this project. Keep ingress disabled during initial
-private infrastructure/platform exercises. The complete secure-cookie login/payment
-journey still requires a suitable HTTPS access path before it can be verified.
-Infrastructure, platform bootstrap and image publication are independent lifecycles.
-Images can be prepared before a session, but they are not a prerequisite for EKS
-or platform installation.
-GitHub variables `DELIVERY_ENABLED=false` and `INFRA_ENABLED=false` block new cloud
-jobs; they do not stop resources already created by the approved Apply run.
-`deploy/environment.yaml` also starts disabled. Do not claim the AWS end-to-end
-deployment has passed until you have performed the activation exercises below.
+AWS currently has one active EKS 1.35 cluster (`commerce-aws`) with one Ready
+`m7i-flex.large` worker, one private single-AZ PostgreSQL RDS instance (`db.t4g.micro`),
+queues, secrets and supporting services. Argo CD is installed. Its six platform
+Applications—baseline, cert-manager, External Secrets, metrics-server, AWS Load
+Balancer Controller and monitoring—plus the platform root and commerce Application
+are Synced and Healthy. Prometheus, Grafana and Alertmanager are running; the
+Alertmanager Slack secret is mounted. No test alert has been sent.
+
+The commerce Application is registered but the environment is deliberately disabled:
+`deploy/environment.yaml` has `enabled: false` and ingress disabled. There is no ALB,
+Route 53 hosted zone or ACM certificate in this account for the shop. The domain's
+DNS is currently managed in Cloudflare. `infrastructure/session/https.tf` can issue
+and validate a certificate only when an existing Route 53 zone is provided; it does
+not create that zone. Secure public HTTPS is needed before exercising login or
+checkout with real browser sessions. The Razorpay test credentials are not configured.
+
+The four immutable image digests in `deploy/release.json` exist in ECR and have
+previously verified signatures and SBOM attestations. `DELIVERY_ENABLED=false` means
+future main changes will not publish images. `INFRA_ENABLED=false` blocks new
+infrastructure workflow starts; neither flag stops the currently running AWS
+resources. EKS, its worker, RDS and monitoring EBS volumes continue to incur charges.
+No infrastructure destroy, restore, live customer journey or test alert has been
+performed yet. This status is a snapshot, not proof of the current AWS bill.
 
 Read this guide in order for the first build: architecture and costs; identity and
 bootstrap; GitHub setup; session creation; platform and release; operations and
@@ -1049,16 +1049,33 @@ one giant script that tries to build, provision, deploy and recover everything.
 
 ## What remains before calling the environment operational
 
-The foundation, workload boundaries and apply identity are created and tracked.
-Release App authentication and both OIDC identities passed the protected
-verification workflow, including saved-plan access and boundary reads. This did
-not execute Terraform apply or prove resource lifecycle permissions.
-The temporary `commerce-aws-iam-setup` administrator role has been deleted.
-Still needed: complete a controlled infrastructure create/update/destroy test;
-review cost and the session plan; apply with approval; install the platform; configure
-ACM/DNS/payment sandbox; verify signed releases; and perform real deployment, alert,
-restore and teardown exercises. Record actual results rather than describing prepared
-YAML as a completed production deployment.
+Infrastructure creation and platform bootstrap have completed through protected
+workflows and reviewed PRs. The stack is still a single-AZ learning environment, not
+an availability-equivalent production system. The following production exercises
+remain:
+
+1. **Secure customer access:** decide whether Route 53 will host `narx.space`. If so,
+   first add its public hosted zone to the retained Terraform foundation (the current
+   session HTTPS module expects an existing zone), review and apply it, then delegate
+   the returned name servers at the domain registrar. Issue and DNS-validate an ACM
+   certificate through Terraform. Keep ingress disabled until the certificate and
+   hostname are verified. Do not expose login or checkout over plain HTTP.
+2. **Release and activation:** the existing ECR digests are already present and
+   verified; there is no need to rebuild them just to deploy. When ready for future
+   source changes, enable image publication through the reviewed release workflow.
+   Use a PR to enable the commerce environment and HTTPS ingress, then merge the
+   reviewed release/configuration changes and verify the Argo rollout.
+3. **Application exercises:** configure Razorpay test-mode credentials in a dedicated
+   secret; verify registration/login, checkout, INR order history, payment callback,
+   outbox-to-SQS delivery and DLQ behavior. Do not treat the payment flow as verified
+   until sandbox transactions succeed.
+4. **Operations exercises:** send an intentional test alert to Slack, confirm
+   dashboards and alert recovery, perform a database backup/restore, test the
+   reviewed application rollback path, and tear down the temporary session through
+   Terraform. Inventory leftovers and inspect billing after AWS reporting catches up.
+
+Record the actual results of each exercise. Prepared YAML and healthy platform
+controllers alone do not prove that the application or its operational recovery works.
 
 ## Reference: concepts before commands
 
