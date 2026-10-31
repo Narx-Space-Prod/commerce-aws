@@ -33,6 +33,18 @@ run "security_boundaries" {
   command = apply
   assert {
     condition = (
+      aws_iam_role.cluster.permissions_boundary == "arn:aws:iam::123456789012:policy/commerce-aws-cluster-boundary" &&
+      aws_iam_role.node.permissions_boundary == "arn:aws:iam::123456789012:policy/commerce-aws-node-boundary" &&
+      aws_iam_role.cni.permissions_boundary == "arn:aws:iam::123456789012:policy/commerce-aws-cni-boundary" &&
+      aws_iam_role.storage.permissions_boundary == "arn:aws:iam::123456789012:policy/commerce-aws-storage-boundary" &&
+      aws_iam_role.ingress.permissions_boundary == "arn:aws:iam::123456789012:policy/commerce-aws-ingress-boundary" &&
+      aws_iam_role.secrets.permissions_boundary == "arn:aws:iam::123456789012:policy/commerce-aws-secrets-boundary" &&
+      alltrue([for key, role in aws_iam_role.delivery : role.permissions_boundary == "arn:aws:iam::123456789012:policy/commerce-aws-session-${key}-boundary"])
+    )
+    error_message = "Every workload role must retain its own reviewed boundary."
+  }
+  assert {
+    condition = (
       toset([for specification in aws_launch_template.node.tag_specifications : specification.resource_type]) == toset(["instance", "volume", "network-interface"]) &&
       alltrue([for specification in aws_launch_template.node.tag_specifications : specification.tags["Project"] == "commerce-aws"])
     )

@@ -13,8 +13,8 @@ variable "name" {
   type    = string
   default = "commerce-aws"
   validation {
-    condition     = can(regex("^[a-z][a-z0-9-]{2,23}$", var.name))
-    error_message = "Use a short lowercase AWS resource prefix (3–24 characters)."
+    condition     = var.name == "commerce-aws"
+    error_message = "This environment's reviewed IAM boundaries require the commerce-aws resource prefix."
   }
 }
 variable "availability_zones" {

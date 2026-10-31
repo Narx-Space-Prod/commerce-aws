@@ -10,9 +10,9 @@ and planning identities, and the MFA bootstrap identity. Their configuration is
 tracked in Terraform. The release App's authentication test passed. A read-only
 session plan was generated; **the EKS session, database, application and monitoring
 have not been deployed**. The apply identity is not yet provisioned or verified.
-The first GitHub plan-only run failed at AWS authentication because the existing
-role trust expects a name-only GitHub subject. The corrected trust must be applied
-to AWS and retested; a reviewed code change alone does not update existing roles.
+The AWS trusts were corrected to GitHub's immutable subject format, and the
+plan-only workflow subsequently passed. Publication and actual session deployment
+remain unverified.
 GitHub variables `DELIVERY_ENABLED=false` and `INFRA_ENABLED=false` keep cloud jobs disabled.
 `deploy/environment.yaml` also starts disabled. Do not claim the AWS end-to-end
 deployment has passed until you have performed the activation exercises below.
@@ -455,6 +455,26 @@ prove that an IAM policy is sufficient or safely scoped.
 
 These role policies and GitHub App credentials are an AWS activation prerequisite,
 not something the unconfigured workflows can silently invent for your account.
+
+`bootstrap/workload-boundaries.tf` defines eight retained permission boundaries,
+one for each session workload role. `workload-boundary-policies.json` stores reviewed
+snapshots of the AWS-managed policies used by cluster/node/CNI/storage roles;
+the ingress boundary uses the checked-in upstream controller policy. Queue roles
+have separate send and receive caps. The secrets cap permits runtime-secret and
+RDS-managed-secret ARN patterns in this account/region; the role's inline policy
+still grants only the two concrete secrets. A boundary sets a maximum and grants
+no permissions by itself. These are reviewed maximums, not proof that every upstream
+policy action is needed by this deployment.
+
+The session resources now require those role-specific boundary ARNs. Provision
+the eight policies under administrator control and track them in bootstrap state
+before deploying the session. The existing MFA bootstrap role cannot create or edit
+these policies. Do not apply the bootstrap additions with an unreviewed identity.
+Future deployment permissions must require the corresponding boundary on each role
+creation and prevent its removal or replacement; that enforcement is still pending
+with the apply-role policy. AWS-managed policy updates do not automatically expand
+the checked-in snapshots: review them alongside EKS/add-on upgrades. The reviewed
+resource prefix is fixed to `commerce-aws` so queue/secret caps stay consistent.
 
 The reviewed `infrastructure/bootstrap/plan-identity.tf` defines the plan role.
 The existing MFA bootstrap role deliberately cannot create new IAM roles. Have an

@@ -8,6 +8,15 @@ variables {
 run "retained_foundation" {
   command = apply
   assert {
+    condition = (
+      length(aws_iam_policy.workload_boundary) == 8 &&
+      alltrue([for policy in aws_iam_policy.workload_boundary : length(policy.policy) <= 6144]) &&
+      jsondecode(aws_iam_policy.workload_boundary["session-publisher"].policy).Statement[0].Action == ["sqs:SendMessage"] &&
+      !contains(jsondecode(aws_iam_policy.workload_boundary["session-worker"].policy).Statement[0].Action, "sqs:SendMessage")
+    )
+    error_message = "Use separate, size-valid boundaries and preserve publisher/consumer separation."
+  }
+  assert {
     condition     = aws_budgets_budget.session.cost_types[0].include_tax && !aws_budgets_budget.session.cost_types[0].include_credit
     error_message = "Tax must count toward the budget; promotional credits must not mask gross resource usage."
   }

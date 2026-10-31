@@ -90,9 +90,10 @@ locals {
   }] })
 }
 resource "aws_iam_role" "delivery" {
-  for_each           = toset(["publisher", "worker"])
-  name               = "${var.name}-session-${each.key}"
-  assume_role_policy = local.pod_trust
+  permissions_boundary = "arn:aws:iam::${var.account_id}:policy/commerce-aws-session-${each.key}-boundary"
+  for_each             = toset(["publisher", "worker"])
+  name                 = "${var.name}-session-${each.key}"
+  assume_role_policy   = local.pod_trust
 }
 resource "aws_iam_role_policy" "delivery" {
   for_each = aws_iam_role.delivery
@@ -110,8 +111,9 @@ resource "aws_eks_pod_identity_association" "delivery" {
   role_arn        = each.value.arn
 }
 resource "aws_iam_role" "secrets" {
-  name               = "${var.name}-secrets"
-  assume_role_policy = local.pod_trust
+  permissions_boundary = "arn:aws:iam::${var.account_id}:policy/commerce-aws-secrets-boundary"
+  name                 = "${var.name}-secrets"
+  assume_role_policy   = local.pod_trust
 }
 resource "aws_iam_role_policy" "secrets" {
   role = aws_iam_role.secrets.id

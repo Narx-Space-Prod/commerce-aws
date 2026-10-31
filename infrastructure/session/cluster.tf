@@ -7,8 +7,9 @@ locals {
   }] })
 }
 resource "aws_iam_role" "cluster" {
-  name               = "${var.name}-cluster"
-  assume_role_policy = local.eks_trust
+  permissions_boundary = "arn:aws:iam::${var.account_id}:policy/commerce-aws-cluster-boundary"
+  name                 = "${var.name}-cluster"
+  assume_role_policy   = local.eks_trust
 }
 resource "aws_iam_role_policy_attachment" "cluster" {
   role       = aws_iam_role.cluster.name
@@ -48,8 +49,9 @@ resource "aws_eks_access_policy_association" "operator" {
   access_scope { type = "cluster" }
 }
 resource "aws_iam_role" "node" {
-  name               = "${var.name}-node"
-  assume_role_policy = local.ec2_trust
+  permissions_boundary = "arn:aws:iam::${var.account_id}:policy/commerce-aws-node-boundary"
+  name                 = "${var.name}-node"
+  assume_role_policy   = local.ec2_trust
 }
 resource "aws_iam_role_policy_attachment" "node" {
   for_each   = toset(["AmazonEKSWorkerNodePolicy", "AmazonEC2ContainerRegistryPullOnly"])
@@ -120,8 +122,9 @@ resource "aws_eks_addon" "cni" {
   depends_on = [aws_eks_addon.identity, aws_iam_role_policy_attachment.cni]
 }
 resource "aws_iam_role" "cni" {
-  name               = "${var.name}-cni"
-  assume_role_policy = local.pod_trust
+  permissions_boundary = "arn:aws:iam::${var.account_id}:policy/commerce-aws-cni-boundary"
+  name                 = "${var.name}-cni"
+  assume_role_policy   = local.pod_trust
 }
 resource "aws_iam_role_policy_attachment" "cni" {
   role       = aws_iam_role.cni.name
@@ -137,8 +140,9 @@ resource "aws_eks_addon" "dns" {
   depends_on   = [aws_eks_node_group.this]
 }
 resource "aws_iam_role" "storage" {
-  name               = "${var.name}-storage"
-  assume_role_policy = local.pod_trust
+  permissions_boundary = "arn:aws:iam::${var.account_id}:policy/commerce-aws-storage-boundary"
+  name                 = "${var.name}-storage"
+  assume_role_policy   = local.pod_trust
 }
 resource "aws_iam_role_policy_attachment" "storage" {
   role       = aws_iam_role.storage.name
