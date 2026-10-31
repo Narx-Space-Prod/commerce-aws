@@ -9,7 +9,8 @@ state bucket, four empty ECR repositories, budget, GitHub OIDC provider, publish
 and planning identities, and the MFA bootstrap identity. Their configuration is
 tracked in Terraform. The release App's authentication test passed. A read-only
 session plan was generated; **the EKS session, database, application and monitoring
-have not been deployed**. The apply identity is not yet provisioned or verified.
+have not been deployed**. The apply identity and its six policies have been provisioned; actual AWS apply
+and destroy behaviour remain unverified.
 The AWS trusts were corrected to GitHub's immutable subject format, and the
 plan-only workflow subsequently passed. Publication and actual session deployment
 remain unverified.
@@ -472,7 +473,7 @@ before deploying the session. The existing MFA bootstrap role cannot create or e
 these policies. Do not apply the bootstrap additions with an unreviewed identity.
 Future deployment permissions must require the corresponding boundary on each role
 creation and prevent its removal or replacement. `apply-identity.tf` now defines
-that role-specific enforcement; it is not yet provisioned or live-tested. AWS-managed policy updates do not automatically expand
+that role-specific enforcement; it is provisioned but not yet live-tested. AWS-managed policy updates do not automatically expand
 the checked-in snapshots: review them alongside EKS/add-on upgrades. The reviewed
 resource prefix is fixed to `commerce-aws` so queue/secret caps stay consistent.
 
@@ -814,9 +815,10 @@ one giant script that tries to build, provision, deploy and recover everything.
 
 ## What remains before calling the environment operational
 
-The foundation and planning role are created and tracked, and release App
-authentication has been verified. Still needed: design and provision a scoped apply
-role; validate both OIDC roles and the GitHub infrastructure workflow against AWS;
+The foundation, workload boundaries and apply identity are created and tracked.
+Release App authentication and the GitHub OIDC plan-only workflow have passed.
+Still needed: remove the temporary `commerce-aws-iam-setup` administrator setup role;
+validate the apply identity and GitHub infrastructure apply workflow against AWS;
 review cost and the session plan; apply with approval; install the platform; configure
 ACM/DNS/payment sandbox; verify signed releases; and perform real deployment, alert,
 restore and teardown exercises. Record actual results rather than describing prepared
@@ -914,7 +916,7 @@ in the chart. CI additionally inspects the runtime image user and scans it.
 
 | Service | Job in this project | Before use / important limitation |
 |---|---|---|
-| IAM and STS | Human role, GitHub OIDC roles and workload permissions. | Enable root MFA; use a non-root operator and short-lived credentials. The apply role is pending. Never create or paste root access keys. |
+| IAM and STS | Human role, GitHub OIDC roles and workload permissions. | Enable root MFA; use a non-root operator and short-lived credentials. The apply role is provisioned; live deployment verification is pending. Never create or paste root access keys. |
 | VPC / EC2 networking | Network isolation, routes, security groups, and worker connectivity. | Confirm account, region, two available AZs, free address space and quotas. Public worker addresses save NAT cost but are not the usual hardened private-node production topology. |
 | EKS and EC2 | Managed Kubernetes API and a managed worker node group. | Check service eligibility, quotas, version/add-on compatibility and current price. One worker is a single point of failure; EKS control-plane availability does not make the workload highly available. |
 | ECR | Four immutable image repositories. | OIDC publisher, repository permissions, encryption and scan settings. The initial repositories exist; publishing is disabled. Image storage is retained and can cost money. |
@@ -1031,7 +1033,7 @@ For destroy, it first checks the session VPC for load balancers and checks for
 project-tagged CSI volumes. A failure blocks that workflow apply. This is a partial
 guard: it does not discover every untagged orphan or stop a local Terraform apply.
 The apply role is defined in `bootstrap/apply-identity.tf` and `apply-services.tf`
-but still needs administrator provisioning and live testing. Its two-hour session
+and is provisioned, but still needs live testing. Its two-hour session
 covers the 90-minute apply-job limit; an expired or failed apply still needs careful
 state inspection before a new plan/retry.
 
