@@ -26,3 +26,20 @@ The handbooks describe both the architecture encoded in this repository and the 
 This is a learning replica of common production practices, not a claim of production readiness or high availability. Its single-node, single-AZ data profile intentionally trades resilience for lab cost. The handbooks explain the tradeoffs and how to discuss them in an interview.
 
 The handbooks are intentionally long. Use the table of contents in each file and read a real source file beside its explanation. Start with the trace-through sections and exercises; they are designed to build understanding step by step, not to serve only as a quick reference.
+
+## How to study and prove understanding
+
+Read each handbook's “Start here” chapter before its runbook. Keep the referenced code open beside it. Work through these milestones in order; advance when you can explain the evidence, not simply repeat the commands.
+
+| Milestone | Exercise | Evidence of understanding |
+|---|---|---|
+| Source to artifact | Trace one frontend change through the workflow | Explain why source SHA, image digest and release commit differ |
+| Infrastructure ownership | Draw the network/EKS/data module graph | Identify which objects Terraform owns and which controllers create |
+| Identity | Follow one SQS worker credential request | Name the service account, Pod Identity role, trust and permission scope |
+| Deployment | Render the Helm chart and inspect a Deployment | Explain selectors, probes, requests, limits, surge and HPA ownership |
+| Operations | Trace a delayed order to its alert | Distinguish outbox failure, queue backlog, worker failure and notification failure |
+| Recovery | Design a synthetic-data restore exercise | State the backup needed, expected data, measured RPO/RTO and cleanup owner |
+
+For a hands-on exercise, record four things: your prediction, the command or reviewed change, the observed result, and your explanation if it differed. Keep synthetic exercise evidence private when it includes account metadata. Live AWS exercises require a deliberately provisioned session; reading, inspecting source and rendering examples can be done without creating cloud resources.
+
+Completing these guides builds a strong foundation. Operational expertise also requires practicing diagnosis, recovery, review and communication over time. The documents label what is implemented, what remains to be configured and what has not been tested, so you can describe your experience accurately.

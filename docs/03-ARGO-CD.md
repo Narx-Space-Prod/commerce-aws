@@ -1,6 +1,56 @@
 # 3. Argo CD handbook: Kubernetes desired state and GitOps
 
+## Contents
+
+- [Start here: what Kubernetes and Argo actually do](#start-here-what-kubernetes-and-argo-actually-do)
+- [3.1 GitOps in plain language](#31-gitops-in-plain-language)
+- [3.2 Ownership architecture](#32-ownership-architecture)
+- [3.3 The YAML map](#33-the-yaml-map)
+- [3.4 Bootstrap: why one manual step exists](#34-bootstrap-why-one-manual-step-exists)
+- [3.5 Daily operation commands](#35-daily-operation-commands)
+- [3.6 Promotion, rollback and drift](#36-promotion-rollback-and-drift)
+- [3.7 Ordered teardown](#37-ordered-teardown)
+- [3.8 How Helm fits in](#38-how-helm-fits-in)
+- [3.9 Read an Argo CD Application as a contract](#39-read-an-argo-cd-application-as-a-contract)
+- [3.10 Read the platform root and six child apps](#310-read-the-platform-root-and-six-child-apps)
+- [3.11 Helm chart source tour: rendered workload behavior](#311-helm-chart-source-tour-rendered-workload-behavior)
+- [3.12 Render locally and understand the output](#312-render-locally-and-understand-the-output)
+- [3.13 Interpret Argo status precisely](#313-interpret-argo-status-precisely)
+- [3.14 Safe hands-on Argo practice](#314-safe-hands-on-argo-practice)
+
 Argo CD is the Kubernetes delivery controller in this project. This guide explains what it watches, which YAML files define it, how the first controller is installed, and how to operate and remove it safely.
+
+## Start here: what Kubernetes and Argo actually do
+
+A **container image** is the packaged program. A **container** is a running instance of it. A **Pod** is Kubernetes' scheduling unit containing one or more containers that share a network identity and volumes. A Pod can be replaced, so clients should not depend on its IP.
+
+A **Deployment** maintains a desired number of interchangeable pods through ReplicaSets. A **Service** provides a stable address and selects pods by labels. An **Ingress** describes HTTP routing; an ingress controller implements it. A **namespace** groups namespaced objects. It is useful for policy and organization, but does not automatically isolate network traffic or grant separate AWS accounts.
+
+Argo adds a reconciliation loop above Kubernetes: it renders Git configuration and submits the desired objects. Kubernetes controllers then maintain pods and endpoints. The AWS load-balancer controller and EBS CSI controller manage relevant AWS resources. Several controllers cooperate; there is no single command whose success proves all these layers are healthy.
+
+### Worked example: one pod becomes two
+
+A Deployment requests one frontend replica. Kubernetes schedules a pod onto a node; the kubelet pulls its image and starts it. Startup probes protect slow initialization; readiness determines whether the pod should receive service traffic; liveness can restart a stuck container. When HPA requests two replicas, the Deployment controller creates another pod. The scheduler still needs enough node capacity. If it cannot place the pod, it remains Pending: HPA did its part, but it did not buy another EC2 worker.
+
+Readiness is not liveness. A process can be alive yet temporarily unable to serve requests. A liveness probe that restarts every pod during a shared database outage can worsen recovery. Probe paths must reflect what the application actually checks; do not infer dependency coverage just from a path named `ready`.
+
+### Requests, limits and rollout headroom
+
+A CPU request of `50m` means 0.05 CPU for scheduling. Memory `64Mi` means 64 mebibytes. Requests help the scheduler allocate capacity; limits restrict runtime consumption. A memory limit breach may terminate a container with OOMKilled. CPU limits may throttle execution. These settings are engineering choices, not a guarantee of application performance.
+
+With one replica and `maxSurge: 1`, Kubernetes may temporarily run two pods during an update. `maxUnavailable: 0` keeps the old ready pod until the replacement becomes ready. The node and namespace quota must fit that overlap. If the new pod cannot schedule, the rollout stalls even when the old application remains available.
+
+| Object | Desired responsibility | Inspect it with |
+|---|---|---|
+| Deployment | Maintain/roll out replicas | `kubectl --context commerce-aws -n commerce get deploy` |
+| Pod | Run containers on a node | `kubectl --context commerce-aws -n commerce get pods` |
+| Service | Stable discovery and label-selected backends | `kubectl --context commerce-aws -n commerce get svc` |
+| PVC | Request persistent storage | `kubectl --context commerce-aws -n commerce get pvc` |
+| HPA | Adjust replica count from metrics | `kubectl --context commerce-aws -n commerce get hpa` |
+| Argo Application | Reconcile rendered Git configuration | `kubectl --context commerce-aws -n argocd get applications` |
+
+Commands require the recreated project cluster. Read section 3.11 beside the actual templates, then practice rendering before making cluster changes.
+
 
 ## 3.1 GitOps in plain language
 
@@ -120,7 +170,7 @@ Useful diagnosis:
 
 ```bash
 kubectl --context commerce-aws -n argocd get application commerce -o yaml
-kubectl --context commerce-aws -n argocd logs deploy/argocd-application-controller --tail=200
+kubectl --context commerce-aws -n argocd logs statefulset/argocd-application-controller --tail=200
 kubectl --context commerce-aws -n argocd logs deploy/argocd-repo-server --tail=200
 kubectl --context commerce-aws -n commerce get deploy,rs,pods,svc,ingress,hpa
 kubectl --context commerce-aws -n commerce describe pod POD_NAME

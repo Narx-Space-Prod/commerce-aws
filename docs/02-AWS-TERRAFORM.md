@@ -1,6 +1,65 @@
 # 2. AWS and Terraform handbook: account to infrastructure
 
+## Contents
+
+- [Start here: cloud infrastructure from first principles](#start-here-cloud-infrastructure-from-first-principles)
+- [2.1 Architecture at a glance](#21-architecture-at-a-glance)
+- [2.2 AWS services and why they are here](#22-aws-services-and-why-they-are-here)
+- [2.3 Network and availability concepts](#23-network-and-availability-concepts)
+- [2.4 Terraform layout and code tour](#24-terraform-layout-and-code-tour)
+- [2.5 IAM in plain language](#25-iam-in-plain-language)
+- [2.6 Safe access and setup sequence](#26-safe-access-and-setup-sequence)
+- [2.7 First-time bootstrap: identity, local state, then remote state](#27-first-time-bootstrap-identity-local-state-then-remote-state)
+- [2.8 GitHub Actions and IAM activation checklist](#28-github-actions-and-iam-activation-checklist)
+- [2.9 Useful read-only and operational commands](#29-useful-read-only-and-operational-commands)
+- [2.10 State, backups and recovery](#210-state-backups-and-recovery)
+- [2.11 Cost and production tradeoffs](#211-cost-and-production-tradeoffs)
+- [2.12 Teardown principles](#212-teardown-principles)
+- [2.13 Terraform code reading: how the graph is built](#213-terraform-code-reading-how-the-graph-is-built)
+- [2.14 Network module: trace a packet](#214-network-module-trace-a-packet)
+- [2.15 EKS module: cluster, node and add-on roles](#215-eks-module-cluster-node-and-add-on-roles)
+- [2.16 Data module: durable versus disposable state](#216-data-module-durable-versus-disposable-state)
+- [2.17 Saved plans, locks and partial operations](#217-saved-plans-locks-and-partial-operations)
+- [2.18 Rebuild the lab safely: operator checklist](#218-rebuild-the-lab-safely-operator-checklist)
+- [2.19 IAM policy deep dive: why each condition exists](#219-iam-policy-deep-dive-why-each-condition-exists)
+- [2.20 Bootstrap Terraform code: ownership by file](#220-bootstrap-terraform-code-ownership-by-file)
+- [2.21 Session Terraform code: inspect variables and outputs before a plan](#221-session-terraform-code-inspect-variables-and-outputs-before-a-plan)
+- [2.22 AWS console versus command-line evidence](#222-aws-console-versus-command-line-evidence)
+- [2.23 Terraform tests: what they prove and what they cannot](#223-terraform-tests-what-they-prove-and-what-they-cannot)
+
 This is a guided tour of the AWS design encoded by the repository. Read it before enabling the infrastructure workflow. Cloud resources cost money, and Terraform can delete them; understand the identity, state and plan before using any mutating command.
+
+## Start here: cloud infrastructure from first principles
+
+A server is a computer running software. In AWS you rent virtual computers (EC2) and managed services. A managed service transfers some operating work to AWS; it does not remove your responsibility for access, configuration, application data, backups or cost. EKS manages the Kubernetes control plane; you still choose worker capacity and configure workloads. RDS manages database hosting; you still choose database access and recovery policy.
+
+An **account** is an AWS ownership and security boundary. A **region** is a geographic deployment area, such as Mumbai. An **Availability Zone** is an isolated location within a region. Two subnets in two AZs do not create two copies of your app: replicas and placement must actually use those locations.
+
+### Address, route, permission: three separate gates
+
+An IP address locates a network interface. A route tells a packet where to go. A security group permits or blocks network traffic. IAM authorizes AWS API operations. None replaces the others. A database may be reachable over TCP but reject its SQL credentials. A user may call `DescribeCluster` in AWS but have no authorization to list Kubernetes pods.
+
+A CIDR such as `10.42.0.0/16` describes an address range. `/16` fixes the first 16 address bits. A `/24` is a smaller range inside it; `/32` describes one IPv4 address. In this project, `/32` operator allowlists constrain who can reach the public EKS API endpoint. Avoid memorizing the numbers without understanding which traffic they constrain.
+
+### Worked example: safely changing node size
+
+Suppose the worker is too small. Editing `instance_type` expresses new intent; it does not resize a running pod or magically update AWS. Terraform plan compares configuration, recorded state and provider reads. Inspect whether the change updates or replaces the managed node group/launch resources. Review disruption, temporary overlapping capacity, quotas and cost. Apply approval authorizes that saved plan. After apply, verify node readiness and workload scheduling. A successful AWS operation alone does not prove the application recovered.
+
+Terraform state maps an address such as `module.eks.aws_eks_cluster.this` to an AWS object. It is neither a database backup nor a snapshot of all AWS resources. Git remembers configuration, state remembers ownership mappings, and database backups preserve business data. Recreating infrastructure from Git does not recover deleted orders.
+
+### Learn to distinguish the layers
+
+| Layer | Example failure | Evidence to inspect |
+|---|---|---|
+| Authentication | Expired MFA/role credentials | `aws sts get-caller-identity` |
+| AWS authorization | AccessDenied on CreateNodegroup | Caller role policies, boundary, denied API |
+| Network reachability | Kubernetes API connection times out | Endpoint CIDR allowlist, current public IP, connectivity |
+| Kubernetes authorization | Forbidden when listing pods | EKS access entry/policy and Kubernetes authorization |
+| Scheduling | Pod remains Pending | Pod events, node capacity, quota, volume topology |
+| Application dependency | Ready process cannot query DB | DB reachability, TLS, app credential and logs |
+
+Use sections 2.13–2.16 to learn the Terraform language and actual modules, then 2.19 for IAM evaluation. The setup chapters are operational procedures; do not run them merely to understand the concepts.
+
 
 ## 2.1 Architecture at a glance
 
@@ -186,15 +245,18 @@ Stop if Terraform proposes rewriting imported IAM objects; reconcile their exact
 Inspect the plan, especially public hosted zones, budgets, IAM, ECR and `prevent_destroy`. Apply only the saved, reviewed bootstrap plan with the approved scoped identity:
 
 ```bash
+# Imports changed state: generate a fresh plan, inspect it, then apply that file.
+terraform -chdir=infrastructure/bootstrap plan -var-file=../../.work/bootstrap.tfvars -out=../../.work/bootstrap.tfplan
+terraform -chdir=infrastructure/bootstrap show ../../.work/bootstrap.tfplan
 terraform -chdir=infrastructure/bootstrap apply ../../.work/bootstrap.tfplan
 terraform -chdir=infrastructure/bootstrap output
 ```
 
-After the state bucket exists, restore the backend configuration and migrate state. Keep the local state backup encrypted until remote state is verified; then securely remove local state copies. Do not commit any `.tfstate`, plan or vars file.
+After the state bucket exists, restore the backend configuration and migrate state. Migration is interactive here so you can inspect and confirm the destination; disabling input can prevent the confirmation. See the [Terraform init reference](https://developer.hashicorp.com/terraform/cli/commands/init). Keep the local state backup encrypted until remote state is verified; then securely remove local state copies. Do not commit any `.tfstate`, plan or vars file.
 
 ```bash
 mv .work/bootstrap-backend.tf infrastructure/bootstrap/backend.tf
-terraform -chdir=infrastructure/bootstrap init -migrate-state -input=false \
+terraform -chdir=infrastructure/bootstrap init -migrate-state -input=true \
   -backend-config='bucket=YOUR_STATE_BUCKET' \
   -backend-config='key=bootstrap/terraform.tfstate' \
   -backend-config='region=ap-south-1' \
@@ -338,7 +400,7 @@ Use `terraform state list` only with the correct initialized backend and profile
 
 `modules/network/main.tf` creates a `10.42.0.0/16` VPC with DNS support/hostnames, an Internet Gateway, two public subnets and two DB subnets. `cidrsubnet(vpc, 8, n)` borrows eight bits from the `/16`, creating `/24` subnets. The public subnets get indexes 0 and 1; DB subnets indexes 10 and 11. AZ order is an input contract: index 0 is the chosen worker/RDS AZ.
 
-The Internet Gateway is only attached to a route table; it does not make every subnet public by itself. The public route table has `0.0.0.0/0 → IGW` and is associated with the public subnets. The module does not create or explicitly associate separate database route tables; the DB subnets therefore use the VPC main route table, whose only configured route is the VPC-local route. There is no NAT Gateway. The Terraform provider default tags the VPC/subnets; Kubernetes subnet discovery tags `kubernetes.io/role/elb=1` tell the ALB controller these are public load-balancer subnets.
+The Internet Gateway attaches to the VPC and is referenced by a route; it does not make every subnet public by itself. The public route table has `0.0.0.0/0 → IGW` and is associated with the public subnets. The module does not create or explicitly associate separate database route tables; the DB subnets therefore use the VPC main route table, whose only configured route is the VPC-local route. There is no NAT Gateway. The Terraform provider default tags the VPC/subnets; Kubernetes subnet discovery tags `kubernetes.io/role/elb=1` tell the ALB controller these are public load-balancer subnets.
 
 Packet examples:
 

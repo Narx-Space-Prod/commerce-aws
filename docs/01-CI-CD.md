@@ -1,6 +1,55 @@
 # 1. CI/CD handbook: from a code change to a reviewed release
 
+## Contents
+
+- [Start here: what are we trying to automate?](#start-here-what-are-we-trying-to-automate)
+- [1.1 The mental model](#11-the-mental-model)
+- [1.2 Developer workflow](#12-developer-workflow)
+- [1.3 What the CI workflow checks](#13-what-the-ci-workflow-checks)
+- [1.4 One image build, publication and provenance](#14-one-image-build-publication-and-provenance)
+- [1.5 Infrastructure pipeline is a separate control plane](#15-infrastructure-pipeline-is-a-separate-control-plane)
+- [1.6 GitHub Actions configuration inventory](#16-github-actions-configuration-inventory)
+- [1.7 How to inspect and troubleshoot a run](#17-how-to-inspect-and-troubleshoot-a-run)
+- [1.8 Learn by following source](#18-learn-by-following-source)
+- [1.9 Production ideas demonstrated—and limits](#19-production-ideas-demonstratedand-limits)
+- [1.10 Trace a real change through the code](#110-trace-a-real-change-through-the-code)
+- [1.11 Read the workflow YAML from top to bottom](#111-read-the-workflow-yaml-from-top-to-bottom)
+- [1.12 Dockerfile stages: tests become a build dependency](#112-dockerfile-stages-tests-become-a-build-dependency)
+- [1.13 Every helper script and why it exists](#113-every-helper-script-and-why-it-exists)
+- [1.14 How to learn a failing run instead of guessing](#114-how-to-learn-a-failing-run-instead-of-guessing)
+- [1.15 Hands-on CI exercises](#115-hands-on-ci-exercises)
+- [1.16 CI/CD vocabulary checkpoint](#116-cicd-vocabulary-checkpoint)
+- [1.17 Workflow configuration: required settings and who owns them](#117-workflow-configuration-required-settings-and-who-owns-them)
+- [1.18 What this pipeline does not guarantee](#118-what-this-pipeline-does-not-guarantee)
+- [1.19 Reproduce the main checks locally](#119-reproduce-the-main-checks-locally)
+
 This chapter follows one developer change all the way through the repository. It assumes no prior CI/CD knowledge, then maps each concept to the workflow and helper code that implements it.
+
+## Start here: what are we trying to automate?
+
+Imagine changing the checkout page. Your laptop can display the change, but another developer's laptop may have different dependencies. The server might still run yesterday's image. A manual deployment might copy half the files before failing. CI/CD makes the steps explicit and repeatable: identify the source, validate it, package it, record evidence, authorize a release, then observe its behavior.
+
+A Git **commit** identifies a source snapshot. A branch is a movable pointer to commits. A pull request asks reviewers to merge a branch into another branch; it is not itself a deployment. An image **digest** identifies a packaged artifact. A deployment commit selects which artifact Kubernetes should run. Keep these identifiers separate when debugging.
+
+### Worked example: three identifiers for one change
+
+Suppose source commit `A` changes frontend code. CI builds image digest `D` from `A`. The release bot creates commit `B`, which changes `deploy/release.json` to reference `D`. Argo observes `B` and deploys `D`. The running image should match `D`; it should not be compared directly to `B` as though the Git commit and image digest were interchangeable.
+
+| Evidence | Question it answers | Where to look |
+|---|---|---|
+| Source SHA `A` | Which application code was built? | Workflow run and publisher record |
+| Image digest `D` | Which exact packaged artifact was released? | ECR and `deploy/release.json` |
+| Deployment SHA `B` | Who reviewed the desired-state change? | Release PR and Argo revision |
+| Ready pods + runtime signals | Does that release operate correctly? | Kubernetes, metrics and customer checks |
+
+If the browser shows old UI, walk this chain in order. If `D` never changed, cache-clearing cannot deploy missing code. If desired `D` changed but pods run another image, inspect Argo/rollout. If pods run `D`, then examine routing and browser/CDN caching. Each hypothesis needs evidence.
+
+### Build, release, deploy: three separate responsibilities
+
+A build transforms source into an artifact. A release selects an artifact and its configuration. A deployment makes the selected release run somewhere. The same artifact may be deployed repeatedly without rebuilding. A configuration-only change may require deployment without changing app source. Terraform provisioning is a fourth operation: it supplies the cluster/network/data resources on which the app depends.
+
+The repository's complete learning path is: understand this distinction; trace section 1.10; read the Dockerfile stages in 1.12; study helpers in 1.13; reproduce selected local checks in 1.19. Read the AWS handbook before enabling cloud jobs.
+
 
 ## 1.1 The mental model
 
